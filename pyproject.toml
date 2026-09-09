@@ -1,0 +1,49 @@
+# Build backend: setuptools. This is a BUILD dependency, not a runtime one --
+# `unboxr` itself imports nothing outside the Python standard library.
+#
+# OFFLINE INSTALL TRAP: `pip install .` applies build isolation by default and
+# downloads setuptools from the index even when it is already installed
+# locally. On an air-gapped machine, use `pip install --no-build-isolation .`
+# See README.md, "Installing offline".
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unboxr"
+description = "Deterministic recursive archive extraction, standard library only."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE.md"]
+authors = [{ name = "Rodolphe Dejeunes" }]
+# Python 3.12 floor: `TarFile.extractall(filter=...)` is only guaranteed from
+# 3.12 onward. Requiring it removes every conditional code path -- no capability
+# probing, no degraded mode to declare, one single extraction behaviour.
+requires-python = ">=3.12"
+keywords = ["archive", "extraction", "tar", "zip", "deterministic"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Archiving",
+    "Topic :: Utilities",
+]
+dependencies = []
+# Single source of truth for the version: `unboxr/__init__.py`. The reverse
+# direction is FORBIDDEN -- reading the version back from installed metadata
+# fails when the package is used straight from a clone.
+dynamic = ["version"]
+
+[project.scripts]
+unboxr = "unboxr.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "unboxr.__version__" }
+
+# `transport/` confronts unboxr with its upstream project and is excluded from
+# the distribution on purpose; see transport/test_equivalence.py.
+[tool.setuptools.packages.find]
+include = ["unboxr*"]

@@ -1,0 +1,10 @@
+# Line endings normalised INSIDE THE REPOSITORY. Without this file, a clone on
+# Windows with `core.autocrlf=true` rewrites text files with CRLF, which breaks
+# byte-for-byte comparisons and shebangs for anyone cloning on Linux.
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.toml text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf

@@ -1,0 +1,287 @@
+"""unboxr does not know what it was carved out of, and proves it.
+
+This package was extracted from a tool that renders regulatory verdicts. None of
+that came along. Two families of guard hold that boundary:
+
+  - the DEPENDENCY guard, by AST and never by `grep`: the roots of every
+    `import` in `unboxr/`, minus the standard library and this package itself,
+    must be the EMPTY SET;
+  - the VOCABULARY guard: a closed list of tokens that would betray the
+    provenance, none of which may appear in the package source.
+
+SCOPE. Both guards cover the `unboxr/` PACKAGE, not the repository.
+`transport/` necessarily names the upstream project -- comparing against it is
+its entire purpose -- and is DECLARED out of scope here. `tests/` is out of
+scope for the same reason: this very file names the forbidden tokens in order to
+forbid them.
+
+This file also holds the packaging invariants, which are boundaries of the same
+kind: what this package must never start depending on.
+"""
+
+from __future__ import annotations
+
+import ast
+import sys
+import tomllib
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PACKAGE_ROOT = REPO_ROOT / "unboxr"
+sys.path.insert(0, str(REPO_ROOT))
+
+import unboxr  # noqa: E402
+import unboxr.cli  # noqa: E402
+import unboxr.extraction  # noqa: E402
+
+# Modules of this package: not dependencies. Removing them from the residue
+# relaxes NOTHING -- the ratchet is on THIRD-PARTY roots, and it stays at zero.
+INTERNAL_ROOTS = {"unboxr"}
+
+# Symbols of the upstream project that must not have followed the code here.
+FORBIDDEN_UPSTREAM_MODULES = (
+    "catalogue_crypto",
+    "avertissements_portee",
+    "arbitrages",
+    "constantes_crypto",
+    "phase1_scanner_crypto",
+)
+
+# Tokens that would betray the provenance, or worse, suggest this package takes
+# part in a qualification it knows nothing about.
+#
+# THIS LIST IS DELIBERATELY NARROW, and two obvious-looking candidates are
+# EXCLUDED because in English they produce false positives on ordinary prose:
+#
+#   - `published`: an everyday English word. "the published interface", "a
+#     published package" are legitimate sentences in a README and in a
+#     docstring, and have nothing to do with the regulatory meaning the term
+#     carries upstream;
+#   - `qualifi`: matches `qualified`, `qualifier` and `qualifies`, all of which
+#     are ordinary English. Banning the prefix would forbid writing "a fully
+#     qualified path".
+#
+# What is banned instead are tokens that carry the regulatory meaning and
+# nothing else. A false negative here is cheap; a guard that cries wolf on
+# ordinary prose gets disabled, which is not.
+FORBIDDEN_TOKENS = (
+    "non-standard cryptography",
+    "ECCN",
+    "772.1",
+    "742.15",
+    "cryptographic-asset",
+    "revue_humaine",
+    "CBOM",
+    "phase1",
+    "phase2",
+)
+
+VERDICT_MARKERS = (
+    "garantir_affichage_console",
+    "import arbitrages",
+    "declarer(",
+)
+
+
+def _package_files() -> list[Path]:
+    return sorted(PACKAGE_ROOT.glob("*.py"))
+
+
+def _import_roots(tree: ast.Module) -> set[str]:
+    roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots.add(node.module.split(".")[0])
+    return roots
+
+
+class TestDependencyBoundary(unittest.TestCase):
+
+    def test_the_package_has_python_modules_to_guard(self):
+        """A guard over an empty set proves nothing."""
+        names = {path.name for path in _package_files()}
+        self.assertEqual({"__init__.py", "cli.py", "extraction.py"}, names)
+
+    def test_no_third_party_import_anywhere_in_the_package(self):
+        """By AST, never by `grep`: a textual search reads commented-out code,
+        strings and docstrings, and misses `import a.b.c as d`."""
+        for path in _package_files():
+            with self.subTest(module=path.name):
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                residue = _import_roots(tree) - set(sys.stdlib_module_names) - INTERNAL_ROOTS
+                self.assertEqual(set(), residue,
+                                 f"unexpected third-party dependency: {residue}")
+
+    def test_no_upstream_module_is_imported(self):
+        for path in _package_files():
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            roots = _import_roots(tree)
+            for module in FORBIDDEN_UPSTREAM_MODULES:
+                with self.subTest(module=path.name, forbidden=module):
+                    self.assertNotIn(module, roots)
+
+    def test_the_scope_of_this_guard_is_the_package_not_the_repository(self):
+        """DECLARED, not implied. `transport/` names the upstream project on
+        purpose; it is not covered here, and must not be."""
+        transport = REPO_ROOT / "transport" / "test_equivalence.py"
+        self.assertTrue(transport.is_file())
+        self.assertNotIn(transport, _package_files())
+        self.assertIn("phase1_scanner_crypto", transport.read_text(encoding="utf-8"))
+
+
+class TestVocabularyBoundary(unittest.TestCase):
+
+    def test_no_forbidden_qualification_token_in_the_package(self):
+        for path in _package_files():
+            source = path.read_text(encoding="utf-8")
+            for token in FORBIDDEN_TOKENS:
+                with self.subTest(module=path.name, token=token):
+                    self.assertNotIn(token, source)
+
+    def test_no_forbidden_token_in_the_readme_either(self):
+        """The README is the first thing a stranger reads."""
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        for token in FORBIDDEN_TOKENS:
+            with self.subTest(token=token):
+                self.assertNotIn(token, readme)
+
+    def test_the_package_declares_no_provisional_arbitration_dependency(self):
+        """Two forms, because they fail for different reasons: the attribute
+        catches a constant defined and re-exported, the token catches one
+        written and never read."""
+        for module in (unboxr, unboxr.cli, unboxr.extraction):
+            with self.subTest(module=module.__name__):
+                self.assertFalse(hasattr(module, "DEPEND_ARBITRAGE"))
+        for path in _package_files():
+            with self.subTest(module=path.name):
+                self.assertNotIn("DEPEND_ARBITRAGE", path.read_text(encoding="utf-8"))
+
+    def test_the_package_mints_no_verdict(self):
+        for path in _package_files():
+            source = path.read_text(encoding="utf-8")
+            for marker in VERDICT_MARKERS:
+                with self.subTest(module=path.name, marker=marker):
+                    self.assertNotIn(marker, source)
+
+    def test_the_package_borrows_no_upstream_message_prefix(self):
+        """A published package uses its ecosystem's standard logging. The
+        bracketed prefixes belong to the project this code came from, and levels
+        replace them here."""
+        for path in _package_files():
+            source = path.read_text(encoding="utf-8")
+            for prefix in ("[INFO]", "[AVERTISSEMENT]", "[ERREUR]", "[DEBUG]",
+                           "[EXPLOITATION]"):
+                with self.subTest(module=path.name, prefix=prefix):
+                    self.assertNotIn(prefix, source)
+
+    def test_the_package_source_is_pure_ascii(self):
+        """Not a style rule: a non-ASCII byte in a source file read without an
+        explicit encoding is a decoding error on a machine whose default
+        codepage is not UTF-8, and a published package is read on machines we
+        do not choose."""
+        for path in _package_files():
+            with self.subTest(module=path.name):
+                raw = path.read_bytes()
+                self.assertEqual(raw, raw.decode("utf-8").encode("ascii", "strict"))
+
+
+class TestPackagingBoundary(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pyproject = tomllib.loads(
+            (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    def test_there_are_no_runtime_dependencies(self):
+        self.assertEqual([], self.pyproject["project"]["dependencies"])
+        self.assertNotIn("optional-dependencies", self.pyproject["project"])
+
+    def test_the_python_floor_is_declared_and_is_3_12(self):
+        """3.12 is what makes `extractall(filter=...)` guaranteed, which is what
+        removes every conditional code path from the extraction chain."""
+        self.assertEqual(">=3.12", self.pyproject["project"]["requires-python"])
+        self.assertIn("Python 3.12 or later",
+                      (REPO_ROOT / "README.md").read_text(encoding="utf-8"))
+
+    def test_no_capability_probe_was_written_for_the_tar_filter(self):
+        """The floor makes the filter unconditional. A probe would be dead code
+        suggesting a doubt that no longer exists."""
+        source = (PACKAGE_ROOT / "extraction.py").read_text(encoding="utf-8")
+        for probe in ("version_info >= (3, 12", "hasattr(tarfile, \"data_filter\")",
+                      "hasattr(tarfile, 'data_filter')"):
+            with self.subTest(probe=probe):
+                self.assertNotIn(probe, source)
+
+    def test_the_version_has_a_single_source_of_truth(self):
+        """`pyproject.toml` reads the package; the reverse is forbidden, because
+        reading installed metadata fails from a clone that was never installed."""
+        self.assertIn("version", self.pyproject["project"]["dynamic"])
+        self.assertEqual({"attr": "unboxr.__version__"},
+                         self.pyproject["tool"]["setuptools"]["dynamic"]["version"])
+        self.assertEqual("0.1.0", unboxr.__version__)
+        source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
+        self.assertNotIn("importlib.metadata", source)
+
+    def test_the_test_suite_uses_unittest_and_nothing_else(self):
+        self.assertEqual([], list(REPO_ROOT.glob("**/conftest.py")))
+        for path in sorted((REPO_ROOT / "tests").glob("*.py")):
+            with self.subTest(module=path.name):
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                self.assertNotIn("pytest", _import_roots(tree))
+
+    def test_no_test_of_this_suite_is_skipped(self):
+        """A skipped test that turns a suite green for nothing is the failure
+        mode this repository refuses. The suite must run everywhere, or fail.
+
+        By AST, not by substring: this very file names the skip mechanisms in
+        order to forbid them, and a textual guard would flag itself. Reaching
+        for `grep` where an AST is needed is the mistake this project has
+        already paid for once.
+        """
+        skip_calls = {"skipTest", "SkipTest"}
+        skip_decorators = {"skip", "skipIf", "skipUnless"}
+        for path in sorted((REPO_ROOT / "tests").glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    for decorator in node.decorator_list:
+                        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+                        name = getattr(target, "attr", getattr(target, "id", ""))
+                        with self.subTest(module=path.name, function=node.name):
+                            self.assertNotIn(name, skip_decorators)
+                elif isinstance(node, ast.Call):
+                    name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+                    with self.subTest(module=path.name, call=name):
+                        self.assertNotIn(name, skip_calls)
+
+    def test_the_licence_carries_no_scope_clause(self):
+        """The upstream licence enumerates directories and excludes a vendored
+        tree. There is nothing of the sort here, and a clause naming
+        directories that do not exist would be worse than none."""
+        licence = (REPO_ROOT / "LICENSE.md").read_text(encoding="utf-8")
+        self.assertIn("MIT License", licence)
+        self.assertIn("Copyright (c) 2026 Rodolphe Dejeunes", licence)
+        for absent in ("wheelhouse", "NOTICE.md", "src/", "packaging/"):
+            with self.subTest(absent=absent):
+                self.assertNotIn(absent, licence)
+
+    def test_the_gitignore_does_not_keep_build_and_dist(self):
+        """The upstream project deliberately keeps `build/` and `dist/` for a
+        reason that has no object here."""
+        ignored = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").split()
+        self.assertIn("build/", ignored)
+        self.assertIn("dist/", ignored)
+
+    def test_the_offline_install_trap_is_written_down(self):
+        """Without this line, unboxr cannot be installed on an air-gapped
+        machine at all: `pip install .` reaches for the index."""
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("--no-build-isolation", readme)
+        self.assertIn("build isolation", readme)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
