@@ -162,6 +162,30 @@ STRING_PLACEHOLDER = "<str>"
 # `attempted_archives`, `amputated_archives`) have no entry in the
 # correspondence table, so they would fail the proof anywhere OUTSIDE a declared
 # region. Everything outside the regions is still compared strictly.
+# --- The figures the story states, held by a test rather than by prose -------
+#
+# The story's section "Contexte" states measured figures about the upstream
+# block. Three were already asserted here -- 24 functions, 9 constants, 13 print
+# sites -- and six were held by prose alone. Prose drifts: on 11 September 2026
+# the line count was already wrong, the slice measuring 848 where the story
+# documented 847, because it kept one trailing blank line. Documentation must
+# not diverge from the code, so the figures live here, where every run says
+# whether they are still true.
+EXPECTED_BLOCK_LINES = 847
+EXPECTED_FUNCTIONS_WITH_PRINT = 6
+EXPECTED_FUNCTIONS_WITHOUT_PRINT = 18
+# The block is called from three places in the upstream project, all outside
+# itself. This is what makes the seam real rather than asserted -- and what
+# story 14.7 will have to rewire.
+EXPECTED_OUTBOUND_CALL_SITES = 3
+OUTBOUND_ENTRY_POINTS = {"est_url", "preparer_source"}
+# The upstream suite this package's `tests/` was REPRODUCED from -- not moved.
+# Both copies live on until 14.7, and the day they stop agreeing is a fact worth
+# failing on.
+UPSTREAM_SUITE = Path("tests") / "test_chaine_extraction.py"
+EXPECTED_UPSTREAM_SUITE_LINES = 552
+EXPECTED_UPSTREAM_SUITE_TESTS = 42
+
 EXPECTED_ORIGINAL_PRINT_SITES = 13
 # Counted over EVERY function of the transported module, the added one included.
 EXPECTED_LOGGING_SITES = 19
@@ -208,7 +232,17 @@ def _read_original_slice() -> str:
             f"{BLOCK_START_MARKER!r} / {BLOCK_END_MARKER!r} not found in that "
             f"order. The upstream file was restructured; fix the markers."
         )
-    return "".join(lines[start:end])
+    sliced = lines[start:end]
+    # Trailing blank lines are separator whitespace before the next section
+    # banner, not part of the block. Dropping them by COUNT would be a third
+    # magic offset; dropping them by CONTENT says what it does and survives a
+    # change in how many there are. Until 11 September 2026 the slice kept one
+    # of them, so it measured 848 lines where the story documented 847 -- a
+    # documentation that diverges from the code, on the very figure the block
+    # is described by.
+    while sliced and not sliced[-1].strip():
+        sliced.pop()
+    return "".join(sliced)
 
 
 def _load_correspondence() -> dict:
@@ -769,6 +803,94 @@ class TestSliceIntegrity(_TransportFixture):
     def test_the_slice_holds_24_functions_and_9_constants(self):
         self.assertEqual(EXPECTED_FUNCTIONS, len(self.original_functions))
         self.assertEqual(EXPECTED_CONSTANTS, len(self.original_constants))
+
+    def test_the_block_is_the_number_of_lines_the_story_documents(self):
+        """847, and the slice must agree with the range the story cites.
+
+        The story names lines 2103-2949 of the upstream module. The slice is
+        delimited by markers, never by line numbers -- those move with every
+        commit -- so the only way the two can be kept honest is to compare
+        their LENGTH.
+        """
+        self.assertEqual(EXPECTED_BLOCK_LINES,
+                         len(self.original_source.splitlines()),
+                         "the transported block no longer has the number of "
+                         "lines the story documents: either the block changed "
+                         "upstream, or the markers no longer delimit it")
+
+    def test_the_print_sites_are_spread_over_the_documented_functions(self):
+        """13 print sites, in 6 functions, with 18 carrying none.
+
+        The total was asserted; its SPREAD was not. Moving every print into one
+        function, or scattering them into six more, left the story's prose
+        false and this proof green.
+        """
+        with_print = without_print = 0
+        for node in self.original_functions.values():
+            sites = sum(1 for sub in ast.walk(node)
+                        if isinstance(sub, ast.Call)
+                        and isinstance(sub.func, ast.Name)
+                        and sub.func.id == "print")
+            if sites:
+                with_print += 1
+            else:
+                without_print += 1
+        self.assertEqual(EXPECTED_FUNCTIONS_WITH_PRINT, with_print)
+        self.assertEqual(EXPECTED_FUNCTIONS_WITHOUT_PRINT, without_print)
+        self.assertEqual(EXPECTED_FUNCTIONS,
+                         with_print + without_print,
+                         "every function is on one side or the other")
+
+    def test_the_upstream_project_calls_the_block_from_three_places(self):
+        """The seam, measured rather than asserted.
+
+        Three call sites outside the block is what makes the extraction a
+        seam that already exists. A fourth appearing means the upstream project
+        grew a new dependency on the block, and story 14.7 has one more place
+        to rewire than it planned for.
+        """
+        root = _fail_without_upstream().parent.parent
+        block_first, block_last = self._block_line_range()
+        found = []
+        for path in sorted((root / "src").glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for sub in ast.walk(tree):
+                if not (isinstance(sub, ast.Call)
+                        and isinstance(sub.func, ast.Name)
+                        and sub.func.id in OUTBOUND_ENTRY_POINTS):
+                    continue
+                inside = (path.name == UPSTREAM_MODULE.name
+                          and block_first <= sub.lineno <= block_last)
+                if not inside:
+                    found.append(f"{path.name}:{sub.lineno} {sub.func.id}")
+        self.assertEqual(EXPECTED_OUTBOUND_CALL_SITES, len(found),
+                         f"call sites found: {found}")
+
+    def _block_line_range(self) -> tuple:
+        lines = _fail_without_upstream().read_text(encoding="utf-8").splitlines()
+        first = next(i for i, l in enumerate(lines, 1)
+                     if l.startswith(BLOCK_START_MARKER)) - 1
+        return first, first + EXPECTED_BLOCK_LINES - 1
+
+    def test_the_upstream_suite_is_still_the_one_this_package_reproduced(self):
+        """552 lines, 42 tests -- the copy `tests/` was reproduced FROM.
+
+        Story 14.1 reproduces that suite rather than moving it, so two copies
+        live on until 14.7 deletes the upstream block. A figure describing a
+        file nobody watches is a figure that rots; this one is watched.
+        """
+        suite = _fail_without_upstream().parent.parent / UPSTREAM_SUITE
+        self.assertTrue(suite.is_file(),
+                        f"{UPSTREAM_SUITE} is gone from the upstream project. "
+                        f"If story 14.7 removed it, this assertion and the "
+                        f"figures in the story's Contexte go with it.")
+        source = suite.read_text(encoding="utf-8")
+        self.assertEqual(EXPECTED_UPSTREAM_SUITE_LINES,
+                         len(source.splitlines()))
+        tests = [node for node in ast.walk(ast.parse(source))
+                 if isinstance(node, ast.FunctionDef)
+                 and node.name.startswith("test_")]
+        self.assertEqual(EXPECTED_UPSTREAM_SUITE_TESTS, len(tests))
 
     def test_the_correspondence_table_covers_98_symbols(self):
         self.assertEqual(98, len(SYMBOLS))
