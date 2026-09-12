@@ -32,10 +32,12 @@ from .extraction import prepare_source
 # The keys are the exact logging format strings emitted by `unboxr.extraction`.
 # Matching on the format string -- not on the formatted message, and not on the
 # level -- is what makes this a counter on NAMED amputations rather than a
-# counter on warnings: one warning of the module, the fallback-naming one, is
-# NOT an amputation and must not be counted. A test walks the AST of
-# `extraction.py` and fails if any of these strings is no longer emitted there,
-# so a reworded message cannot silently stop being counted.
+# counter on warnings: several warnings of the module are NOT amputations and
+# must not be counted, among them the one raised when an archive lies outside
+# the analysed root and its provisional name has to be derived from an absolute
+# path. A test walks the AST of `extraction.py` and fails if any of these
+# strings is no longer emitted there, so a reworded message cannot silently stop
+# being counted.
 AMPUTATION_MESSAGES = {
     "office container refused": (
         "%s: office container, excluded from extraction -- its "
@@ -81,23 +83,44 @@ AMPUTATION_MESSAGES = {
 NOT_AN_AMPUTATION = {
     # Nothing is lost: the two contents end up in the same directory. The
     # warning exists because a SILENT merge is untraceable, not because the
-    # corpus shrank.
-    "%s: destination %s already holds content; extracting into it "
-    "merges the two, with no further warning.",
+    # corpus shrank. The nested one bears on the PROVISIONAL directory, whose
+    # name is derived from the archive's own path -- so the only thing that can
+    # already hold it is an earlier run over the same workspace.
+    "%s: its provisional extraction directory %s already holds content, "
+    "left by an earlier run over this workspace; the two are mixed there, "
+    "with no further warning.",
     "Destination %s already holds content; extracting into it merges "
     "the two, with no further warning.",
     # The content IS in the extracted tree; only the source archive survived.
+    # It stays under the provisional name, the rename being skipped: its
+    # target is the archive that could not be removed.
     "%s was extracted successfully but could not be removed (%s): the "
-    "archive is kept alongside its own extracted content. Its content "
-    "IS in the extracted tree.",
+    "archive is kept, and its content stays under the provisional name "
+    "%s. Its content IS in the extracted tree.",
+    # The content is on disk and complete, only under a name the consumer did
+    # not ask for. This is where the provisional name stops being provisional,
+    # which is why the determinism contract declares it.
+    "%s: the extracted content could not be renamed to %s (%s): it stays "
+    "under its provisional name %s. Its content IS in the extracted tree, "
+    "under that name.",
     # A RECAP of amputations already counted one by one. Counting it again
     # would inflate the total by one per run.
     "Flattening finished, but %s archive(s) were left unopened: %s. "
     "Their content is NOT in the extracted tree.",
     # A naming caveat, not a loss -- and the reason the counter matches on
-    # named amputations rather than on warnings.
-    "Archive outside the analysed root, fallback naming derived from the "
+    # named amputations rather than on warnings. The provisional name is now
+    # produced for EVERY archive; this warning stays rare, it fires only for an
+    # archive found outside the analysed root.
+    "Archive outside the analysed root, provisional name derived from the "
     "absolute path: %s. The produced name depends on the machine.",
+    # Content is REPLACED here, not lost from the run in progress: what this
+    # extraction writes IS in the tree afterward, only the content that
+    # previously sat at that path is not. Reachable when a reused workspace's
+    # earlier flattening pass left a directory at a path this extraction's
+    # own raw member now occupies (story 14.2 of the upstream project,
+    # crypto-scan).
+    "%s: %s already held content as a directory of a different origin; it "
+    "is discarded, not merged, to make room for this extraction.",
 }
 
 # Not an amputation: the corpus GROWS here, because an archive was recognised by

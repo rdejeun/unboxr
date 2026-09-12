@@ -3,9 +3,9 @@
 The command is the ONLY part of the package that configures logging. It is also
 the only part that can restore, today, a guarantee the library gives up by going
 silent: an amputation of the corpus must be announced. It does that with a
-COUNTER on the six NAMED amputations -- not by counting warnings, since one
-warning of the module (the machine-dependent naming fallback) is not an
-amputation at all.
+COUNTER on the six NAMED amputations -- not by counting warnings, since
+several warnings of the module (the machine-dependent naming fallback among
+them) are not amputations at all.
 
 `--quiet` therefore cannot mean "warnings only": the most frequent amputation,
 an office container being refused, is announced at the informational level.
@@ -265,14 +265,26 @@ class TestAmputationsAreNeverHidden(_CommandBench):
         self.assertNotIn(cli.CORPUS_WIDENING_MESSAGE,
                          cli.AMPUTATION_MESSAGES.values())
 
-    def test_the_naming_fallback_warning_is_not_counted_as_an_amputation(self):
+    def test_the_provisional_naming_warning_is_not_counted_as_an_amputation(self):
         """It is a warning, and it is not an amputation: nothing was left
         unopened. Counting warnings instead of naming amputations would have
         made the oracle reminder fire on it."""
         source = (REPO_ROOT / "unboxr" / "extraction.py").read_text(encoding="utf-8")
-        self.assertIn("fallback naming derived", source)
+        self.assertIn("provisional name derived", source)
         for message in cli.AMPUTATION_MESSAGES.values():
-            self.assertNotIn("fallback naming", message)
+            self.assertNotIn("provisional name", message)
+
+    def test_a_rename_that_fails_is_declared_and_is_not_an_amputation(self):
+        """The one path on which the provisional name becomes the definitive
+        one. The content is whole and on disk, so counting it as an amputation
+        would claim a loss that did not happen -- but staying silent would
+        leave a consumer looking for a directory that is not there."""
+        message = ("%s: the extracted content could not be renamed to %s (%s): "
+                   "it stays under its provisional name %s. Its content IS in "
+                   "the extracted tree, under that name.")
+        self.assertIn(message, cli.NOT_AN_AMPUTATION)
+        self.assertIn(message, self._emitted_format_strings("warning"))
+        self.assertNotIn(message, cli.AMPUTATION_MESSAGES.values())
 
     def test_an_amputation_triggers_the_positive_only_oracle_reminder(self):
         archive = self._archive_with_an_office_container()

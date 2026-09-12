@@ -23,16 +23,41 @@ the consumer.
    result does not depend on the order in which the file system happens to
    enumerate directory entries.
 
-2. Extraction directory names. When an archive has no usable base name, the
-   fallback directory name derives from the SHA-256 digest of its POSIX
-   relative path -- never from `hash()`, never from a rank, never from an
-   absolute path. The name is therefore invariant across interpreter runs,
-   invariant across the nesting level at which the archive is met, and
-   independent of every other archive in the tree.
+2. Extraction directory names. Two names, and they are not the same promise.
+
+   (a) The FINAL name. A nested archive is flattened into a directory carrying
+       that archive's own name, in full and verbatim: extension included, no
+       case folding, no stripping. `toto.jar` yields `toto.jar/`. The name is
+       INHERITED from the input rather than built here, so two archives that
+       differ by a single character can no longer land in one directory and
+       merge their content.
+
+   (b) The PROVISIONAL name. That final path is held by the archive itself
+       until it is removed, so the extraction is first written under a name
+       derived from the SHA-256 digest of the archive's POSIX relative path --
+       never from `hash()`, never from a rank, never from an absolute path. It
+       is therefore invariant across interpreter runs, invariant across the
+       nesting level at which the archive is met, and independent of every
+       other archive in the tree. It has to be: it can stop being provisional
+       (see the non-guarantees below).
+
+   ONE name, and one only, is FABRICATED here: the `_decompressed` suffix a
+   single-file decompression falls back on when stripping the matched
+   extension leaves no name at all
+   -- one named literally `.gz`, `.pack.gz`, `.lzma`, `.xz`, `.bz2` or `.bz`,
+   where no natural name exists to give the payload. It is required to match no
+   recognised extension, failing which the payload would be re-detected as an
+   archive at the next level and reported as an amputation that never happened.
 
 3. POSIX paths. Every path used as a sort key or as a component of a produced
-   name goes through `.as_posix()`. The names produced are valid path
-   components on Windows and on Linux alike.
+   name goes through `.as_posix()`. The PROVISIONAL name above is a valid path
+   component on Windows and on Linux alike, made of digits, letters `a-f` and
+   `_` only. The FABRICATED name is too, but it is not limited to that
+   character set: it carries whatever the archive's own name did before the
+   matched extension was stripped away, a literal `.` included in the
+   degenerate case above (`.gz` yields `.gz_decompressed`). The FINAL name is
+   not this package's to promise at all: it is the name the input already
+   carries on the file system it came from.
 
 WHAT THE CONTRACT DOES NOT GUARANTEE
 ------------------------------------
@@ -51,6 +76,12 @@ WHAT THE CONTRACT DOES NOT GUARANTEE
   earlier versions extracted. In exchange the behaviour is now stable from one
   Python release to the next -- the filter being requested explicitly, the
   change of default in Python 3.14 has no effect here.
+- No guarantee that the provisional extraction name stays provisional. It is
+  normally transitory -- the directory is renamed as soon as the archive is
+  gone -- but it becomes the DEFINITIVE name of that directory whenever the
+  rename fails, and a failed extraction leaves it behind too. It is
+  deterministic in both cases, which is the whole reason it is a digest rather
+  than a temporary directory.
 
 LOGGING
 -------
@@ -504,6 +535,31 @@ def _extract_tar_with_checks(tar_path: Path, dest: Path, mode: str = "r:*") -> N
                     shutil.rmtree(item)
                 else:
                     if target.is_dir() and not target.is_symlink():
+                        # A directory sitting at this path is about to be
+                        # discarded to make room for a node of a different
+                        # shape from this extraction -- not merged. Silent
+                        # for an EMPTY directory: nothing is lost. Announced
+                        # when it holds content, the same discipline as every
+                        # other collision this module already declares rather
+                        # than hides.
+                        #
+                        # Reachable, among other routes, when an EARLIER
+                        # flattening pass over a reused workspace renamed a
+                        # nested archive to a directory at this exact path,
+                        # and this extraction's own raw member -- not yet
+                        # opened -- now lands on that same name. Measured in
+                        # code review, story 14.2 of the upstream project,
+                        # crypto-scan.
+                        try:
+                            target_held_content = any(target.iterdir())
+                        except OSError:
+                            target_held_content = False
+                        if target_held_content:
+                            logger.warning(
+                                "%s: %s already held content as a directory "
+                                "of a different origin; it is discarded, not "
+                                "merged, to make room for this extraction.",
+                                tar_path, target)
                         shutil.rmtree(target)
                     elif target.exists() or target.is_symlink():
                         target.unlink()
@@ -536,47 +592,27 @@ def _name_without_extension(path: Path, matched_ext: str) -> str:
     return path.stem
 
 
-# Length of the digest kept for the naming fallback. Sixteen hexadecimal
+# Length of the digest kept for the provisional name. Sixteen hexadecimal
 # characters = 64 bits: the probability of a collision between two archives of
 # the same package is negligible next to that of a real archive name literally
 # carrying the shape produced here (a residual limit, recorded upstream).
-FALLBACK_DIGEST_LENGTH = 16
+PROVISIONAL_DIGEST_LENGTH = 16
 
 
-def _deterministic_fallback_name(archive: Path, root: Path) -> str:
+def _provisional_extraction_name(archive: Path, root: Path) -> str:
     """
-    Extraction directory name for an archive that `_name_without_extension`
-    yields nothing for (an archive named `.zip`, `.tar.gz`... with no stem).
+    The name an extraction is held under while the archive it comes from still
+    occupies its final path: extract here, remove the archive, then rename.
 
-    NEVER `hash()`, which is salted by `PYTHONHASHSEED` (randomised per
-    interpreter launch by default since Python 3.3): two runs over the same
-    package then produced two different directory names, propagated into every
-    relative path of the extracted subtree.
+    A nested archive's final directory is its own name, verbatim, and no file
+    system tolerates a file and a directory of the same name in one parent --
+    hence the detour, taken for EVERY archive and not as a fallback.
 
-    The digest is taken over the **POSIX relative path of the archive**, never
-    over its absolute path -- which would reintroduce a dependency on the
-    machine's temporary directory -- and never over a rank.
-
-    This design replaces a positional counter `(level, position)`, whose only
-    stated motive was "no new dependency (`hashlib`)": a FALSE motive, since
-    `hashlib` belongs to the standard library this package is built on. Three
-    defects were MEASURED on the counter, all absent here (measured in code
-    review on 2 September 2026 in the upstream project, crypto-scan):
-
-    1. **silent collision** -- a root carrying `.zip` (fallback, position 0
-       -> `archive_1_0`) AND an archive actually named `archive_1_0.tar.gz`
-       both extracted into the same directory, `extract_archive` doing
-       `dest.mkdir(exist_ok=True)`: merged contents, no warning;
-    2. **N directories instead of one** -- the name varying with the level, an
-       archive whose extraction failed created one directory per level walked;
-    3. **rank GLOBAL to the level** -- adding an unrelated archive elsewhere in
-       the package, or running on a machine with no 7-Zip binary, renumbered the
-       directory and moved every path of its subtree.
-
-    A digest of the relative path is invariant across levels (closes 2), does
-    not depend on any other archive (closes 3), and collides with a real name
-    only if that name literally carries the shape produced here (residual
-    limit).
+    A digest of the POSIX relative path, not a counter or a temporary
+    directory, because this name can stop being provisional (see the
+    non-guarantees below) and must then still be deterministic. A positional
+    counter was tried and withdrawn for three measured defects -- see story
+    3.1 of the upstream project, crypto-scan.
 
     The produced name is a valid path component on Windows and on Linux alike:
     digits, letters `a-f` and `_` only, none of `< > : " / \\ | ? *`.
@@ -584,18 +620,35 @@ def _deterministic_fallback_name(archive: Path, root: Path) -> str:
     try:
         relative = archive.relative_to(root).as_posix()
     except ValueError:
-        # `rglob` always yields paths under `root`; this fallback covers the
-        # case of a caller passing an unrelated root, rather than failing a
-        # whole run over a directory name. The absolute path depends on the
-        # machine -- a declared stopgap, not the nominal case.
-        logger.warning("Archive outside the analysed root, fallback naming derived "
+        # `rglob` always yields paths under `root`; this branch covers the case
+        # of a caller passing an unrelated root, rather than failing a whole run
+        # over a directory name. The absolute path depends on the machine -- a
+        # declared stopgap, not the nominal case. It is the only naming caveat
+        # this module announces, and it is rare: the name itself is now produced
+        # for every archive, this warning only for one outside the root.
+        logger.warning("Archive outside the analysed root, provisional name derived "
                        "from the absolute path: %s. The produced name depends on "
                        "the machine.", archive)
         relative = archive.as_posix()
-    digest = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:FALLBACK_DIGEST_LENGTH]
+    digest = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:PROVISIONAL_DIGEST_LENGTH]
     return f"archive_{digest}"
 
 
+# THE ONLY NAME `unboxr` FABRICATES, and the shape it is required to keep.
+#
+# The four extractors below name their output `_name_without_extension(...)`,
+# which is the natural name in every real case: `notes.txt.gz` yields
+# `notes.txt`. The `_decompressed` suffix only ever plays for an archive whose
+# name is entirely consumed by the matched extension -- one named literally
+# `.gz`, `.pack.gz`, `.lzma`, `.xz`, `.bz2` or `.bz` -- where no natural name
+# exists to take its place.
+#
+# The name produced must match no extension of CATEGORY_BY_EXT. That property
+# was accidental; it is a requirement from now on, and it is tested. A file
+# named `.gz` IS recognised as an archive, so a "cleaner" name that fell back on
+# a known extension would have the payload re-detected as an archive at the next
+# level, fail to extract, and be reported as an amputation that never happened
+# -- measured 12 September 2026, and the reason the suffix stays.
 def extract_plain_gzip(path: Path, dest: Path, matched_ext: str) -> None:
     """Decompress a plain gzip file (not a tar archive): one single output file."""
     dest.mkdir(parents=True, exist_ok=True)
@@ -847,39 +900,68 @@ def flatten_nested_archives(root: Path, max_depth: int = 10) -> None:
         logger.info("Level %s: %s nested archive(s) found.", level, len(found_archives))
         for archive in found_archives:
             _, matched_ext = categorize_archive(archive)
-            name_without_ext = _name_without_extension(archive, matched_ext) or _deterministic_fallback_name(archive, root)
-            sub_dest = archive.parent / f"{name_without_ext}_extracted"
-            # `is_dir()` first, and the read guarded: `sub_dest` may exist and
-            # NOT be a directory (a plain file of that name), in which case
-            # `iterdir()` raises -- and this check sits before the `try` below,
-            # so the exception would abort the WHOLE flattening and leave every
-            # remaining archive unopened without a single record. The collision
-            # CHECK must never be what amputates the corpus. Verified in code
-            # review on 9 September 2026.
+            # FOUR STEPS, IN THIS ORDER, and the order is forced by the file
+            # system. The final directory of a nested archive is the archive's
+            # OWN NAME, verbatim -- `toto.jar` gives `toto.jar/`, `toto.zip`
+            # gives `toto.zip/`, so two archives that used to strip to the same
+            # base name can no longer merge. But that name is occupied by the
+            # archive itself until it is removed, and no file system tolerates a
+            # file and a directory of the same name in one parent. Hence:
+            # extract under a provisional name, remove the archive, rename.
+            provisional_dest = archive.parent / _provisional_extraction_name(archive, root)
+            final_dest = archive.parent / archive.name
+            # THE COLLISION GUARD, ON THE PROVISIONAL NAME. It cannot bear on
+            # `final_dest`: that path is the archive's own, so nothing can hold
+            # it while the archive is there. The provisional name, on the other
+            # hand, is DETERMINISTIC -- that is what it is for -- and
+            # `attempted_archives` is local to this call. So a workspace where
+            # an earlier run left a provisional directory behind, because ITS
+            # rename failed, hands the same directory to this one, already
+            # populated, and the two contents mix with no trace.
+            #
+            # That is the narrow route to THIS guard, measured 12 September
+            # 2026. A run whose rename SUCCEEDED leaves the final directory
+            # holding the member's own name, so re-unpacking the same outer
+            # archive over that workspace no longer reaches here.
+            #
+            # It does not follow that a reused workspace then fails loudly at
+            # the first level in every case: that is only true when the OUTER
+            # container is zip-shaped, where `zipfile` cannot write a file
+            # where a directory already sits. A tar- or 7z-shaped outer
+            # container does not fail at all -- its own merge logic
+            # (`_extract_tar_with_checks`, below) discards the stale directory
+            # and writes the raw member in its place. That merge used to be
+            # silent for this exact shape of collision; it is not any more --
+            # see the warning there -- but it remains a REPLACEMENT, not a
+            # failure. Measured in code review, story 14.2 of the upstream
+            # project, crypto-scan.
+            #
+            # `is_dir()` first, and the read guarded: the path may exist and NOT
+            # be a directory, in which case `iterdir()` raises -- and this check
+            # sits before the `try` below, so the exception would abort the
+            # WHOLE flattening and leave every remaining archive unopened
+            # without a single record. The collision CHECK must never be what
+            # amputates the corpus. Verified in code review on 9 September 2026.
             occupied = False
-            if sub_dest.is_dir():
+            if provisional_dest.is_dir():
                 try:
-                    occupied = any(sub_dest.iterdir())
+                    occupied = any(provisional_dest.iterdir())
                 except OSError:
                     # Unreadable destination: the extraction below will fail on
                     # it and be announced there, with its cause.
                     occupied = False
             if occupied:
-                # Two archives with the same base name but different
-                # extensions (e.g. "package.zip" and "package.tar.gz") strip
-                # to the same name_without_ext: without this, their content
-                # merges into one directory with no trace at all. Verified in
-                # code review on 8 September 2026.
-                #
-                # The message states what is OBSERVED -- the destination is not
-                # empty -- and never names a cause: a reused workspace and an
-                # earlier level of the same run produce the same picture, and
-                # asserting "another archive" would be false in both.
-                logger.warning("%s: destination %s already holds content; "
-                               "extracting into it merges the two, with no "
-                               "further warning.", archive, sub_dest)
+                # The message states what is OBSERVED and names the one cause
+                # that can produce it, which is no longer "another archive":
+                # the provisional name is derived from this archive's own path,
+                # so only an earlier run over the same workspace can have
+                # written there.
+                logger.warning("%s: its provisional extraction directory %s "
+                               "already holds content, left by an earlier run "
+                               "over this workspace; the two are mixed there, "
+                               "with no further warning.", archive, provisional_dest)
             try:
-                extract_archive(archive, sub_dest)
+                extract_archive(archive, provisional_dest)
             except Exception as exc:
                 logger.warning("Extraction of %s (%s) failed: %s (archive kept as is). "
                                "Its content is NOT in the extracted tree.",
@@ -889,6 +971,16 @@ def flatten_nested_archives(root: Path, max_depth: int = 10) -> None:
                 continue
             try:
                 archive.unlink()  # drop the archive once flattened in place
+            except FileNotFoundError:
+                # The archive is already gone -- not a removal failure. It
+                # was found by `rglob` and extracted just above, so this can
+                # only be external interference (another process, an
+                # antivirus quarantine). Nothing here blocks the rename
+                # below: reporting "the archive is kept" would be false, and
+                # skipping the rename would strand perfectly good content
+                # under its provisional name for no reason. Measured in code
+                # review, story 14.2 of the upstream project, crypto-scan.
+                pass
             except OSError as exc:
                 # Extraction above already succeeded: reporting this as an
                 # extraction failure would be false -- the content IS in the
@@ -901,11 +993,41 @@ def flatten_nested_archives(root: Path, max_depth: int = 10) -> None:
                 # at EVERY subsequent level -- the very defect the ledger was
                 # added to close, re-opened by this branch. Verified in code
                 # review on 9 September 2026.
+                #
+                # The message names the PROVISIONAL directory, because that is
+                # where the content actually is: the rename below is skipped --
+                # its target is still the archive.
                 logger.warning("%s was extracted successfully but could not be "
-                               "removed (%s): the archive is kept alongside its "
-                               "own extracted content. Its content IS in the "
-                               "extracted tree.", archive, exc)
+                               "removed (%s): the archive is kept, and its "
+                               "content stays under the provisional name %s. "
+                               "Its content IS in the extracted tree.",
+                               archive, exc, provisional_dest)
                 attempted_archives.add(archive)
+                continue
+            try:
+                # `final_dest.exists()` is checked FIRST, rather than letting
+                # `Path.rename()` decide on its own: on POSIX, renaming onto
+                # an EMPTY existing directory succeeds silently, replacing it
+                # with no exception raised -- while the identical precondition
+                # raises `FileExistsError` on Windows, caught below. Checking
+                # first makes an already-occupied `final_dest` behave the
+                # same, declared, way on both platforms, rather than being
+                # silent on one of them. Measured in code review, story 14.2
+                # of the upstream project, crypto-scan.
+                if final_dest.exists():
+                    raise OSError(f"a directory or file already exists at {final_dest}")
+                provisional_dest.rename(final_dest)
+            except OSError as exc:
+                # NOT an amputation: the content is on disk and complete, only
+                # under a name the consumer did not ask for. Announced all the
+                # same -- the same discipline as the partial move of the tar
+                # staging area, and the reason the provisional name has to be
+                # deterministic: here it stops being provisional.
+                logger.warning("%s: the extracted content could not be renamed "
+                               "to %s (%s): it stays under its provisional name "
+                               "%s. Its content IS in the extracted tree, under "
+                               "that name.", archive, final_dest, exc,
+                               provisional_dest)
 
     logger.warning("Maximum depth (%s) reached: flattening stops, archives may "
                    "remain unopened. Their content is NOT in the extracted tree.",
@@ -1015,7 +1137,7 @@ def _sha256_digest_of_file(path: Path) -> str:
     NATURE" (a directory -- a normal case, and one that returns `None`) and
     "unexpected read failure".
     """
-    # Named `digest_bytes`, NOT `digest`: `_deterministic_fallback_name` already
+    # Named `digest_bytes`, NOT `digest`: `_provisional_extraction_name` already
     # uses that name for a hash of a PATH, unrelated to a hash of CONTENT --
     # reusing the identifier would recreate exactly the confusion this module
     # warns about (noted in code review on 7 September 2026 in the upstream

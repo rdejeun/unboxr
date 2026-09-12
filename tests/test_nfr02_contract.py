@@ -1,9 +1,9 @@
 """The determinism contract, tested as a contract and not as prose.
 
-`unboxr.extraction` writes down three guarantees and five non-guarantees. This
+`unboxr.extraction` writes down three guarantees and six non-guarantees. This
 file holds the three guarantees by PROPERTY -- a test that only grepped the
 docstring would go green on a module that had stopped honouring it -- and holds
-the five non-guarantees by presence, because a silently deleted non-guarantee
+the six non-guarantees by presence, because a silently deleted non-guarantee
 reads as a promise.
 
 Guarantee 1 needs care. A real directory tree is NOT enough: the file systems in
@@ -42,18 +42,22 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import unboxr.extraction as ux  # noqa: E402
 
-FALLBACK_NAME_SHAPE = re.compile(r"^archive_[0-9a-f]{16}$")
+PROVISIONAL_NAME_SHAPE = re.compile(r"^archive_[0-9a-f]{16}$")
 
-# The five things the contract explicitly does NOT guarantee. Each entry is a
+# The six things the contract explicitly does NOT guarantee. Each entry is a
 # fragment that must appear in the written contract. They are held here because
 # a non-guarantee that quietly disappears from the documentation turns into an
 # implied promise -- the exact opposite of what it was written for.
+#
+# The COUNT is asserted in the test below, not merely written in its name: a
+# figure engraved in a test name never goes red, it just becomes a lie.
 DECLARED_NON_GUARANTEES = (
     "No symbolic-link containment",
     "__pycache__",
     "No guarantee on any document",
     "when the 7-Zip binary is absent",
     "the tar security filter was made mandatory",
+    "provisional extraction name stays provisional",
 )
 
 
@@ -171,7 +175,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import unboxr.extraction as ux
-print(ux._deterministic_fallback_name(Path(sys.argv[2]) / sys.argv[3],
+print(ux._provisional_extraction_name(Path(sys.argv[2]) / sys.argv[3],
                                       Path(sys.argv[2])))
 """
 
@@ -198,7 +202,7 @@ class TestExtractionNames(_Bench):
         first = self._name_in_child("0", root, relative)
         second = self._name_in_child("1", root, relative)
         self.assertEqual(first, second)
-        self.assertRegex(first, FALLBACK_NAME_SHAPE)
+        self.assertRegex(first, PROVISIONAL_NAME_SHAPE)
 
     def test_the_name_is_the_digest_of_the_posix_relative_path(self):
         """Stated as a formula so that a change of input -- an absolute path, a
@@ -206,13 +210,13 @@ class TestExtractionNames(_Bench):
         relative = "vendor/deep/.tar.gz"
         expected = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:16]
         self.assertEqual(f"archive_{expected}",
-                         ux._deterministic_fallback_name(self.dir / relative, self.dir))
+                         ux._provisional_extraction_name(self.dir / relative, self.dir))
 
     def test_the_name_does_not_vary_with_the_nesting_level(self):
         """The defect a positional `(level, position)` counter had: one
         directory per level walked, for a single archive."""
         archive = self.dir / "a" / "b" / "c" / ".zip"
-        names = {ux._deterministic_fallback_name(archive, self.dir) for _ in range(5)}
+        names = {ux._provisional_extraction_name(archive, self.dir) for _ in range(5)}
         self.assertEqual(1, len(names))
 
     def test_the_name_does_not_depend_on_the_other_archives_in_the_tree(self):
@@ -220,28 +224,45 @@ class TestExtractionNames(_Bench):
         renumbered the directory and moved every path of its subtree."""
         root = self.dir / "tree"
         target = self._zip(root / "vendor" / ".zip")
-        before = ux._deterministic_fallback_name(target, root)
+        before = ux._provisional_extraction_name(target, root)
 
         self._zip(root / "another.zip")
         self._zip(root / "aaa" / "earlier.zip")
-        after = ux._deterministic_fallback_name(target, root)
+        after = ux._provisional_extraction_name(target, root)
         self.assertEqual(before, after)
 
-    def test_end_to_end_the_produced_directory_carries_that_name(self):
+    def test_end_to_end_the_directory_left_behind_carries_the_final_name(self):
+        """DECLARED LOSS OF COVERAGE, and it is not an oversight.
+
+        This test used to observe the PROVISIONAL name on disk, in the finished
+        tree. It cannot any more, and it must not: the contract now says that
+        name is normally transitory, so a test asserting it survives a run would
+        contradict the very thing being promised. What is observable at the end
+        of a run is the FINAL name -- here, an archive named literally `.zip`
+        yields a directory named `.zip`, and no digest appears anywhere.
+
+        The three determinism properties of the provisional name are therefore
+        held by UNIT tests only (the four above), never end to end. Nothing
+        else in the suite reaches it on disk.
+        """
         root = self.dir / "tree"
         target = self._zip(root / "vendor" / ".zip")
-        expected = ux._deterministic_fallback_name(target, root)
+        provisional = ux._provisional_extraction_name(target, root)
         with _Quiet():
             ux.flatten_nested_archives(root)
-        self.assertTrue((root / "vendor" / f"{expected}_extracted").is_dir())
 
-    def test_an_archive_outside_the_root_announces_its_fallback(self):
+        self.assertTrue((root / "vendor" / ".zip").is_dir())
+        self.assertTrue((root / "vendor" / ".zip" / "code" / "a.c").is_file())
+        self.assertFalse((root / "vendor" / provisional).exists())
+        self.assertFalse((root / "vendor" / f"{provisional}_extracted").exists())
+
+    def test_an_archive_outside_the_root_announces_the_absolute_path_it_used(self):
         """A machine-dependent name is a declared stopgap, never a silent one."""
         outside = self.dir / "elsewhere" / "x.zip"
         self._zip(outside)
         with self.assertLogs("unboxr", level="WARNING") as captured:
-            name = ux._deterministic_fallback_name(outside, self.dir / "tree")
-        self.assertRegex(name, FALLBACK_NAME_SHAPE)
+            name = ux._provisional_extraction_name(outside, self.dir / "tree")
+        self.assertRegex(name, PROVISIONAL_NAME_SHAPE)
         self.assertIn("depends on", captured.records[0].getMessage())
 
 
@@ -257,8 +278,8 @@ class TestPosixPaths(_Bench):
         for relative in ("a/.zip", "b/c/.tar.gz", "UPPER/Mixed Case/.7z",
                          "accented-nom-francais/.tgz", "spaces and (parens)/.zip"):
             with self.subTest(relative=relative):
-                name = ux._deterministic_fallback_name(self.dir / relative, self.dir)
-                self.assertRegex(name, FALLBACK_NAME_SHAPE)
+                name = ux._provisional_extraction_name(self.dir / relative, self.dir)
+                self.assertRegex(name, PROVISIONAL_NAME_SHAPE)
                 self.assertEqual(set(), set(name) & forbidden)
 
     def test_the_name_is_invariant_to_the_temporary_directory(self):
@@ -271,8 +292,8 @@ class TestPosixPaths(_Bench):
 
         relative = "vendor/pkg/.tar.gz"
         self.assertEqual(
-            ux._deterministic_fallback_name(first_root / relative, first_root),
-            ux._deterministic_fallback_name(second_root / relative, second_root))
+            ux._provisional_extraction_name(first_root / relative, first_root),
+            ux._provisional_extraction_name(second_root / relative, second_root))
 
     def test_the_sort_key_is_a_posix_string_not_a_raw_path(self):
         """A sort on a raw `Path` is not portable: `PureWindowsPath` compares on
@@ -303,16 +324,47 @@ class TestTheWrittenContract(unittest.TestCase):
         cls.docstring = _flatten(ux.__doc__ or "")
         cls.readme = _flatten((REPO_ROOT / "README.md").read_text(encoding="utf-8"))
 
-    def test_the_five_non_guarantees_are_written_in_the_module(self):
+    def test_the_six_non_guarantees_are_written_in_the_module(self):
+        self.assertEqual(6, len(DECLARED_NON_GUARANTEES),
+                         "the count is part of what this file asserts: update "
+                         "the name of this test and the docstring above with it")
         for fragment in DECLARED_NON_GUARANTEES:
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, self.docstring)
+
+    def test_the_non_guarantee_on_the_provisional_name_does_not_overpromise(self):
+        """It said "never a stable observable state", which was false on the
+        rename-failure path -- the one path where that name is what the
+        consumer is left with. A non-guarantee that lies is worse than none."""
+        for text in (self.docstring, self.readme):
+            self.assertIn("provisional extraction name stays provisional", text)
+            self.assertIn("rename fails", text)
 
     def test_the_contract_is_written_in_the_readme_too(self):
         for heading in ("Traversal order", "Extraction directory names",
                         "POSIX paths", "does not guarantee"):
             with self.subTest(heading=heading):
                 self.assertIn(heading, self.readme)
+
+    def test_the_two_directory_names_are_told_apart_in_both_texts(self):
+        """Headings alone said nothing about what guarantee 2 promises, and it
+        now promises two different things about two different names. Both texts
+        have to distinguish them, or the published one drifts from the module."""
+        for claim in ("that archive's own name, in full and verbatim",
+                      "SHA-256 digest of the archive's POSIX relative path",
+                      "it can stop being provisional"):
+            with self.subTest(claim=claim):
+                self.assertIn(claim, self.docstring)
+                self.assertIn(claim, self.readme)
+
+    def test_the_only_fabricated_name_is_declared_in_both_texts(self):
+        """Declaring beats keeping quiet: this is the one name the package
+        makes up, and the one place a "cleaner" name would break extraction."""
+        for claim in ("`_decompressed` suffix", "no natural name exists",
+                      "required to match no recognised extension"):
+            with self.subTest(claim=claim):
+                self.assertIn(claim, self.docstring)
+                self.assertIn(claim, self.readme)
 
     def test_the_positive_only_oracle_reminder_is_due_in_both(self):
         """The absolute rule that exempts a module without a verdict from the
@@ -323,8 +375,12 @@ class TestTheWrittenContract(unittest.TestCase):
 
     def test_the_contract_names_no_upstream_requirement_number(self):
         """The guarantees are unboxr's own; they are not stated by reference to
-        a requirement of a project its users have never heard of."""
-        for token in ("NFR-02", "NFR-07", "NFR-13", "AC-1", "AC-2", "AC-5"):
+        a requirement of a project its users have never heard of.
+
+        `D8` and `D22` are decision numbers of that same upstream backlog: the
+        naming rules they settled are stated here as rules, never by number."""
+        for token in ("NFR-02", "NFR-07", "NFR-13", "AC-1", "AC-2", "AC-5",
+                      "D8", "D22"):
             with self.subTest(token=token):
                 self.assertNotIn(token, self.docstring)
                 self.assertNotIn(token, self.readme)

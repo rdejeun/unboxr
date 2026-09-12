@@ -1,5 +1,30 @@
 """Equivalence proof between the upstream block and `unboxr.extraction`.
 
+PINNED TO ITS BASELINE ON 12 SEPTEMBER 2026 -- READ THIS BEFORE DEBUGGING A RED
+------------------------------------------------------------------------------
+This proof holds the TRANSPORT of the upstream block: same code, same
+behaviour, different language. It was written against `unboxr` as it stood on
+12 September 2026 and it is NOT extended past that point.
+
+Since that date the naming of extraction directories has DELIBERATELY changed:
+a nested archive is flattened into a directory carrying its own name verbatim,
+by way of a provisional name it is renamed away from. That is a change of
+OUTPUT, not a transport defect, and it is meant to be visible here.
+
+So this suite is EXPECTED to fail. Measured on 12 September 2026, against
+upstream `c3d4a6f`: 36 tests, 13 failures and 2 errors, on
+`flatten_nested_archives`, on the naming function beside it (renamed, its role
+of fallback being gone), on the module constant that named the digest length,
+and on the behavioural tests that observe the directories flattening produces.
+A red here is not a regression to hunt down; it is the boundary between "proved
+equivalent" and "changed on purpose" doing its job. Extending the proof to cover
+the new behaviour would erase exactly that distinction, which is why it is not
+done. The figures above are a reading taken on that date, not a target to keep
+green -- they will drift as the rest of the work lands.
+
+What happens to this directory next -- kept frozen as a historical record, or
+removed with the upstream block it compares against -- is not settled here.
+
 WHY THIS IS NOT IN `tests/`
 ---------------------------
 These tests confront `unboxr` with the repository it was carved out of. They

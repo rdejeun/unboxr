@@ -478,8 +478,12 @@ class TestOfficeContainerExclusion(_Bench):
 
         self._capture(ux.flatten_nested_archives, root)
 
-        self.assertFalse((root / "manual_extracted").exists())
-        self.assertTrue((root / "manual.docx").exists())
+        # The directory to forbid is `manual.docx`, the name of the container
+        # itself: under the naming scheme in force it is what flattening WOULD
+        # produce. The assertion used to read `manual_extracted`, a name nothing
+        # can produce any more -- green while testing nothing at all.
+        self.assertFalse((root / "manual.docx").is_dir())
+        self.assertTrue((root / "manual.docx").is_file())
         self.assertNotIn("document.xml", [p.name for p in root.rglob("*")])
 
     def test_the_list_covers_the_four_announced_families(self):
@@ -542,6 +546,417 @@ class TestNonRegression(_Bench):
                     category in source or category in ux.NATIVE_TAR_MODES,
                     f"category '{category}' is not handled by extract_archive()",
                 )
+
+
+# ---------------------------------------------------------------------------
+# Names kept: the directory carries the archive name verbatim, the decompressed
+# file its natural name
+# ---------------------------------------------------------------------------
+class TestNamesAreKept(_Bench):
+    """The extraction directory of a nested archive is `archive.name`, verbatim.
+
+    Two archives sharing a base name but not an extension used to strip to the
+    same directory and merge their content behind a single warning. They now
+    land in two directories that cannot collide, because a file name is unique
+    in its own parent.
+    """
+
+    def _tree(self) -> Path:
+        root = self.dir / "tree"
+        root.mkdir()
+        return root
+
+    def _zip_at(self, path: Path, members=(("code/aes.c", "int a;"),)) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(path, "w") as z:
+            for arcname, content in members:
+                z.writestr(arcname, content)
+        return path
+
+    def _tar_gz_at(self, path: Path, members=(("src/sha.c", "int b;"),)) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(path, "w:gz") as t:
+            for arcname, content in members:
+                payload = content.encode("utf-8")
+                info = tarfile.TarInfo(arcname)
+                info.size = len(payload)
+                t.addfile(info, io.BytesIO(payload))
+        return path
+
+    def _gzip_at(self, path: Path, content=b"int key = 42;") -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(path, "wb") as f:
+            f.write(content)
+        return path
+
+    def test_the_directory_carries_the_full_archive_name_extension_included(self):
+        root = self._tree()
+        self._zip_at(root / "toto.jar")
+        self._capture(ux.flatten_nested_archives, root)
+
+        self.assertTrue((root / "toto.jar").is_dir())
+        self.assertTrue((root / "toto.jar" / "code" / "aes.c").is_file())
+        self.assertFalse((root / "toto").exists())
+        self.assertFalse((root / "toto_extracted").exists())
+
+    def test_the_case_of_the_archive_name_is_not_transformed(self):
+        """The name is INHERITED from the input, never rebuilt from it."""
+        root = self._tree()
+        self._zip_at(root / "MixedCase.JAR")
+        self._capture(ux.flatten_nested_archives, root)
+
+        produced = [p.name for p in root.iterdir() if p.is_dir()]
+        self.assertEqual(["MixedCase.JAR"], produced)
+
+    def test_a_double_extension_produces_one_directory_not_two_nested(self):
+        """`.tar.gz` is read in a single pass by `tarfile`: no intermediate
+        `.tar` is ever written, so no `toto.tar.gz/toto.tar/` can appear."""
+        root = self._tree()
+        self._tar_gz_at(root / "toto.tar.gz")
+        self._capture(ux.flatten_nested_archives, root)
+
+        self.assertTrue((root / "toto.tar.gz" / "src" / "sha.c").is_file())
+        self.assertFalse((root / "toto.tar.gz" / "toto.tar").exists())
+
+    def test_two_archives_of_the_same_stem_no_longer_merge(self):
+        """The collision this whole naming scheme exists to remove."""
+        root = self._tree()
+        self._zip_at(root / "toto.jar", members=(("from_jar.c", "int j;"),))
+        self._zip_at(root / "toto.zip", members=(("from_zip.c", "int z;"),))
+        _, capture = self._capture(ux.flatten_nested_archives, root)
+
+        self.assertTrue((root / "toto.jar" / "from_jar.c").is_file())
+        self.assertTrue((root / "toto.zip" / "from_zip.c").is_file())
+        self.assertFalse((root / "toto.jar" / "from_zip.c").exists())
+        self.assertFalse((root / "toto.zip" / "from_jar.c").exists())
+        self.assertNotIn("already holds", capture.messages)
+
+    def test_the_produced_directory_is_not_rediscovered_as_an_archive(self):
+        """`is_archive()` returns True for a DIRECTORY named `toto.jar` -- it
+        tests the name, not the kind of node. The `p.is_file()` predicate of
+        the search is the ONLY thing standing between this naming scheme and an
+        endless rediscovery, so it is pinned here rather than assumed."""
+        root = self._tree()
+        self._zip_at(root / "toto.jar")
+        self._capture(ux.flatten_nested_archives, root)
+
+        produced = root / "toto.jar"
+        self.assertTrue(produced.is_dir())
+        self.assertTrue(ux.is_archive(produced),
+                        "were this False, the assertion below would pass for "
+                        "the wrong reason and the predicate could be dropped")
+
+        _, capture = self._capture(ux.flatten_nested_archives, root)
+        self.assertNotIn("nested archive(s) found", capture.messages)
+
+    def test_a_nested_plain_gzip_yields_its_natural_name_inside_that_directory(self):
+        """The trajectory no test covered: the two plain-compression tests of
+        this suite call `extract_archive` directly and never assert a name."""
+        root = self._tree()
+        self._gzip_at(root / "notes.txt.gz", b"clear text")
+        self._capture(ux.flatten_nested_archives, root)
+
+        self.assertTrue((root / "notes.txt.gz").is_dir())
+        self.assertEqual(b"clear text",
+                         (root / "notes.txt.gz" / "notes.txt").read_bytes())
+        self.assertFalse((root / "notes.txt_extracted").exists())
+        self.assertFalse((root / "notes.txt.gz_extracted").exists())
+
+
+# ---------------------------------------------------------------------------
+# The one name unboxr fabricates, and the shape it has to keep
+# ---------------------------------------------------------------------------
+class TestTheFabricatedDecompressedName(_Bench):
+
+    # The five degenerate names named by the contract, plus `.bz`, which the
+    # table treats identically. Each with the compressor that writes it.
+    DEGENERATE_ARCHIVES = ((".gz", gzip.open), (".pack.gz", gzip.open),
+                           (".lzma", lzma.open), (".xz", lzma.open),
+                           (".bz2", bz2.open), (".bz", bz2.open))
+
+    def test_the_fabricated_name_matches_no_recognised_extension(self):
+        """Accidental until it was measured, a requirement from now on.
+
+        A payload named after a recognised extension would be re-detected as an
+        archive at the next level, fail to extract, and be reported as an
+        amputation that never happened. `.gz` is `is_archive() == True`;
+        `.gz_decompressed` is not, and that is the whole reason for the suffix.
+
+        The name is OBSERVED on the file the extractor writes, never recomputed
+        here: a test that rebuilt the name from the same formula as the module
+        would stay green on any change of that formula.
+        """
+        for extension, opener in self.DEGENERATE_ARCHIVES:
+            with self.subTest(extension=extension):
+                degenerate = self.dir / extension
+                with opener(degenerate, "wb") as f:
+                    f.write(b"payload, not an archive")
+                self.assertTrue(
+                    ux.is_archive(degenerate),
+                    "the degenerate case this test is built on has moved")
+
+                dest = self.dir / f"out{extension}"
+                ux.extract_archive(degenerate, dest)
+                produced = [p for p in dest.iterdir() if p.is_file()]
+                self.assertEqual(1, len(produced))
+
+                name = produced[0].name
+                matched = [e for e in ux.SORTED_EXTENSIONS if name.lower().endswith(e)]
+                self.assertEqual([], matched,
+                                 f"'{name}' would be re-detected as an archive")
+                self.assertFalse(ux.is_archive(produced[0]))
+
+    def test_the_module_states_why_the_fabricated_name_has_that_shape(self):
+        """A future tidy-up of the name would silently reintroduce the false
+        amputation, so the motive lives next to the code, not only here."""
+        import inspect
+        source = inspect.getsource(ux)
+        self.assertIn("_decompressed", source)
+        self.assertIn("must match no extension of CATEGORY_BY_EXT", source)
+
+
+# ---------------------------------------------------------------------------
+# The provisional name: its guard, and the two paths on which it survives
+# ---------------------------------------------------------------------------
+class TestTheProvisionalName(_Bench):
+    """Extract under a provisional name, remove the archive, rename.
+
+    Each of the three steps can fail, and none of the three failures is an
+    amputation of the corpus: the content is on disk in all of them. They are
+    announced anyway, and what they announce is WHERE the content actually is.
+    """
+
+    def _tree(self) -> Path:
+        root = self.dir / "tree"
+        root.mkdir()
+        return root
+
+    def _zip_at(self, path: Path, members=(("code/aes.c", "int a;"),)) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(path, "w") as z:
+            for arcname, content in members:
+                z.writestr(arcname, content)
+        return path
+
+    def test_a_reused_workspace_can_land_on_a_populated_provisional_directory(self):
+        """The ONLY collision this scheme leaves open, and the reason the guard
+        moved rather than went away.
+
+        The FINAL name cannot collide: it is the archive's own path, which no
+        other node can hold while the archive is there. The PROVISIONAL name
+        can. It is deterministic by design, and the ledger that stops an archive
+        being offered twice is local to one call -- so a directory left under
+        that name by an earlier run over the same workspace is met again, and
+        the two contents mix.
+
+        MEASURED, and it narrows the route rather than the risk: a run whose
+        rename SUCCEEDED leaves no provisional directory and, better still,
+        leaves the final one holding the member's own name -- so a plain re-run
+        over that workspace no longer reaches this guard at all, it fails at the
+        first level instead. What reaches the guard is a workspace where an
+        earlier run's rename FAILED, which is exactly the path on which the
+        provisional name became definitive.
+        """
+        root = self._tree()
+        self._zip_at(root / "pkg.zip")
+        provisional = ux._provisional_extraction_name(root / "pkg.zip", root)
+
+        def refuse_rename(self, *args, **kwargs):
+            raise OSError("rename refused by the file system")
+
+        with mock.patch.object(Path, "rename", refuse_rename):
+            self._capture(ux.flatten_nested_archives, root)
+        self.assertTrue((root / provisional).is_dir(),
+                        "the run must leave the provisional directory behind, "
+                        "or this test proves nothing")
+
+        # The workspace is reused: the archive is back at the same relative
+        # path, and it can be, since the final name was never taken.
+        self._zip_at(root / "pkg.zip", members=(("code/other.c", "int b;"),))
+        _, capture = self._capture(ux.flatten_nested_archives, root)
+
+        self.assertIn("already holds content", capture.messages)
+        self.assertIn("earlier run over this workspace", capture.messages)
+        self.assertIn("pkg.zip", capture.messages)
+
+    def test_the_guard_survives_a_provisional_path_that_is_not_a_directory(self):
+        """The guard sits OUTSIDE every `try`: an exception raised here would
+        abort the whole flattening and leave every remaining archive unopened
+        without a record. A plain file sitting at the provisional path used to
+        be the way to raise one."""
+        root = self._tree()
+        archive = self._zip_at(root / "pkg.zip")
+        blocker = root / ux._provisional_extraction_name(archive, root)
+        blocker.write_text("not a directory", encoding="utf-8")
+        self._zip_at(root / "second.zip", members=(("code/b.c", "int b;"),))
+
+        _, capture = self._capture(ux.flatten_nested_archives, root)
+
+        # The first archive fails -- and IS reported as an amputation, because
+        # its content really did not reach the tree. The second one, which the
+        # aborted run would have swallowed in silence, is extracted.
+        self.assertIn("is NOT in the extracted tree", capture.messages)
+        self.assertTrue((root / "second.zip" / "code" / "b.c").is_file())
+
+    def test_an_archive_that_cannot_be_removed_says_where_its_content_is(self):
+        """The rename is skipped here -- its target is the archive that could
+        not be removed -- so the content stays under the provisional name, and
+        the message has to name THAT, not a directory that does not exist."""
+        root = self._tree()
+        archive = self._zip_at(root / "locked.zip")
+        provisional = ux._provisional_extraction_name(archive, root)
+
+        def refuse_unlink(self, *args, **kwargs):
+            raise OSError("held by another process")
+
+        with mock.patch.object(Path, "unlink", refuse_unlink):
+            _, capture = self._capture(ux.flatten_nested_archives, root)
+
+        self.assertIn("could not be removed", capture.messages)
+        self.assertIn(provisional, capture.messages)
+        self.assertIn("IS in the extracted tree", capture.messages)
+        self.assertTrue((root / provisional / "code" / "aes.c").is_file())
+        self.assertTrue((root / "locked.zip").is_file())
+
+    def test_a_rename_that_fails_leaves_the_content_under_a_declared_name(self):
+        """The one path on which the provisional name becomes the definitive
+        one -- and the reason it is a digest rather than a temporary directory.
+        Not an amputation: the content is whole, only its name is not the one
+        asked for."""
+        root = self._tree()
+        archive = self._zip_at(root / "pkg.zip")
+        provisional = ux._provisional_extraction_name(archive, root)
+
+        def refuse_rename(self, *args, **kwargs):
+            raise OSError("rename refused by the file system")
+
+        with mock.patch.object(Path, "rename", refuse_rename):
+            _, capture = self._capture(ux.flatten_nested_archives, root)
+
+        self.assertIn("could not be renamed", capture.messages)
+        self.assertIn("IS in the extracted tree", capture.messages)
+        self.assertTrue((root / provisional / "code" / "aes.c").is_file())
+        self.assertFalse((root / "pkg.zip").exists())
+
+    def test_a_failed_extraction_is_still_an_amputation_and_the_recap_says_so(self):
+        """The two ledgers stay two. An archive that could not be OPENED is an
+        amputation; one that could not be removed, or renamed, is not."""
+        root = self._tree()
+        broken = root / "broken.zip"
+        broken.write_bytes(b"PK\x03\x04 truncated, not a zip at all")
+
+        _, capture = self._capture(ux.flatten_nested_archives, root)
+
+        self.assertIn("is NOT in the extracted tree", capture.messages)
+        self.assertIn("were left unopened", capture.messages)
+        self.assertTrue(broken.is_file())
+
+    def test_an_archive_left_in_place_is_not_offered_again_at_every_level(self):
+        """The ledger holds ARCHIVE paths, never the transient directories this
+        scheme now multiplies. Without it a failing archive is re-discovered and
+        re-announced once per level, up to ten times."""
+        root = self._tree()
+        broken = root / "broken.zip"
+        broken.write_bytes(b"PK\x03\x04 truncated, not a zip at all")
+
+        _, capture = self._capture(ux.flatten_nested_archives, root)
+
+        failures = [record for record in capture.records
+                    if "Extraction of" in record.getMessage()]
+        self.assertEqual(1, len(failures))
+
+    def test_a_reused_workspace_does_not_silently_discard_a_prior_flattening(self):
+        """The route ONE LEVEL UP from the guard above: not a second run of
+        `flatten_nested_archives` itself, but a second top-level extraction
+        (`prepare_source`'s own `extract_archive` call) over a workspace where
+        an earlier flattening pass already renamed a nested archive to its own
+        verbatim name (`archive.name`, AC-1). A raw, not-yet-opened tar member
+        of that name can then land on a directory -- exactly the shape of
+        collision `_extract_tar_with_checks`'s merge logic silently discarded
+        before this correction (measured in code review, story 14.2 of the
+        upstream project, crypto-scan)."""
+        root = self._tree()
+        self._zip_at(root / "pkg.zip", members=(("code/aes.c", "int a;"),))
+        self._capture(ux.flatten_nested_archives, root)
+        self.assertTrue((root / "pkg.zip" / "code" / "aes.c").is_file(),
+                        "the first flattening must have produced the "
+                        "directory this test collides with, or it proves "
+                        "nothing")
+
+        # A second, unrelated top-level tar container carrying a raw member
+        # literally named `pkg.zip` -- not the archive from the first run,
+        # nothing that opens it is exercised here, only the collision on the
+        # path `pkg.zip` inside `root`.
+        outer = self.dir / "outer.tar"
+        with tarfile.open(outer, "w") as t:
+            payload = b"not the same pkg.zip, unopened raw bytes"
+            info = tarfile.TarInfo("pkg.zip")
+            info.size = len(payload)
+            t.addfile(info, io.BytesIO(payload))
+
+        _, capture = self._capture(ux.extract_archive, outer, root)
+
+        self.assertIn("already held content as a directory", capture.messages)
+        self.assertIn("pkg.zip", capture.messages)
+        self.assertTrue((root / "pkg.zip").is_file(),
+                        "the raw member DOES replace the stale directory -- "
+                        "this is a declared replacement, not a refusal, and "
+                        "the previously-flattened content is gone with it")
+
+    def test_a_preexisting_empty_final_directory_is_declared_not_silently_replaced(self):
+        """`Path.rename()` alone would replace an EMPTY directory silently on
+        POSIX while raising on Windows for the identical precondition -- an
+        explicit `final_dest.exists()` check makes both platforms declare the
+        same way instead of one of them staying silent. Measured in code
+        review, story 14.2 of the upstream project, crypto-scan."""
+        root = self._tree()
+        archive = self._zip_at(root / "pkg.zip")
+        real_unlink = Path.unlink
+
+        def unlink_then_race_an_empty_directory_in(self, *args, **kwargs):
+            real_unlink(self, *args, **kwargs)
+            if self == archive:
+                # Simulates something else recreating an empty directory at
+                # the archive's own path between the unlink above and the
+                # rename below -- the only way `final_dest` can be occupied
+                # there, since the archive itself held that path until now.
+                self.mkdir()
+
+        with mock.patch.object(Path, "unlink", unlink_then_race_an_empty_directory_in):
+            _, capture = self._capture(ux.flatten_nested_archives, root)
+
+        self.assertIn("could not be renamed", capture.messages)
+        provisional = ux._provisional_extraction_name(archive, root)
+        self.assertTrue((root / provisional / "code" / "aes.c").is_file())
+        self.assertTrue((root / "pkg.zip").is_dir())
+        self.assertEqual([], list((root / "pkg.zip").iterdir()),
+                         "a silent native rename would have moved the "
+                         "extracted content in here instead")
+
+    def test_an_archive_already_gone_before_unlink_still_gets_renamed(self):
+        """`archive.unlink()` raising `FileNotFoundError` -- external
+        interference already removed it -- must not be treated like a real
+        removal failure: nothing blocks completing the rename, and reporting
+        "the archive is kept" would be false. Measured in code review, story
+        14.2 of the upstream project, crypto-scan."""
+        root = self._tree()
+        archive = self._zip_at(root / "pkg.zip")
+        real_unlink = Path.unlink
+
+        def unlink_reports_already_gone(self, *args, **kwargs):
+            # The file really is removed -- as external interference would
+            # have left it -- but the call itself reports `FileNotFoundError`
+            # rather than the ordinary success `archive.unlink()` expects.
+            if self == archive:
+                real_unlink(self, *args, **kwargs)
+                raise FileNotFoundError(f"already removed: {self}")
+            return real_unlink(self, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", unlink_reports_already_gone):
+            _, capture = self._capture(ux.flatten_nested_archives, root)
+
+        self.assertNotIn("could not be removed", capture.messages)
+        self.assertTrue((root / "pkg.zip" / "code" / "aes.c").is_file())
 
 
 if __name__ == "__main__":

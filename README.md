@@ -153,15 +153,34 @@ strictly local. There is no telemetry, no update check, and no index lookup.
    inside a `.7z` envelope, both iterate in the order of the POSIX relative
    path. The result does not depend on the order in which your file system
    happens to enumerate directory entries.
-2. **Extraction directory names.** When an archive has no usable base name, the
-   fallback directory name derives from the SHA-256 digest of its POSIX relative
-   path -- never from `hash()`, never from a rank, never from an absolute path.
-   It is therefore invariant across interpreter runs, invariant across the
-   nesting level at which the archive is met, and independent of every other
-   archive in the tree.
+2. **Extraction directory names.** Two names, and they are not the same
+   promise.
+   - The **final** name: a nested archive is flattened into a directory
+     carrying that archive's own name, in full and verbatim -- extension
+     included, no case folding, no stripping. `toto.jar` yields `toto.jar/`.
+     The name is *inherited* from the input rather than built here, so two
+     archives that differ by a single character can no longer land in one
+     directory and merge their content.
+   - The **provisional** name: that final path is held by the archive itself
+     until it is removed, so the extraction is first written under a name
+     derived from the SHA-256 digest of the archive's POSIX relative path --
+     never from `hash()`, never from a rank, never from an absolute path. It is
+     therefore invariant across interpreter runs, invariant across the nesting
+     level at which the archive is met, and independent of every other archive
+     in the tree. It has to be: it can stop being provisional (see below).
+
+   One name, and one only, is **fabricated** here: the `_decompressed` suffix a
+   single-file decompression falls back on when stripping the matched
+   extension leaves no name at all
+   -- one named literally `.gz`, `.pack.gz`, `.lzma`, `.xz`, `.bz2` or `.bz`,
+   where no natural name exists to give the payload. It is required to match no
+   recognised extension, failing which the payload would be re-detected as an
+   archive at the next level and reported as an amputation that never happened.
 3. **POSIX paths.** Every path used as a sort key or as a component of a
-   produced name goes through `.as_posix()`. Produced names are valid path
-   components on Windows and on Linux alike.
+   produced name goes through `.as_posix()`. The provisional and fabricated
+   names above are valid path components on Windows and on Linux alike. The
+   final name is not this package's to promise: it is the name the input
+   already carries on the file system it came from.
 
 ### What the contract does not guarantee
 
@@ -174,6 +193,12 @@ strictly local. There is no telemetry, no update check, and no index lookup.
 - **No guarantee that the tree matches what earlier versions produced**: the tar
   security filter refuses archives they extracted. In exchange, the behaviour is
   now stable from one Python release to the next.
+- **No guarantee that the provisional extraction name stays provisional.** It is
+  normally transitory -- the directory is renamed as soon as the archive is gone
+  -- but it becomes the *definitive* name of that directory whenever the rename
+  fails, and a failed extraction leaves it behind too. It is deterministic in
+  both cases, which is the whole reason it is a digest rather than a temporary
+  directory.
 
 ## Development
 
