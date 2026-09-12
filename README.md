@@ -78,11 +78,28 @@ writes no document; later versions will.
 from pathlib import Path
 import unboxr
 
-tree, nature, digest = unboxr.prepare_source("package-1.2.3.whl",
-                                             workspace=Path("./unpacked"))
-# tree   -> Path to the fully flattened extracted tree
-# nature -> "source" | "built" | "undetermined" | "directory"
-# digest -> bare hexadecimal SHA-256 of the input, or None for a directory
+prepared = unboxr.prepare_source("package-1.2.3.whl",
+                                 workspace=Path("./unpacked"))
+# prepared.tree   -> Path to the fully flattened extracted tree
+# prepared.nature -> "source" | "built" | "undetermined" | "directory"
+# prepared.digest -> bare hexadecimal SHA-256 of the input, None for a directory
+# prepared.report -> what was opened, and what was not
+
+for entry in prepared.report.not_opened:
+    print(entry.path, unboxr.report.text_for(entry.code))
+```
+
+The report can also be **passed in**, which is what makes it survive the
+exception that ends a run -- an office container given as the source is refused,
+and *then* the run fails with nothing to return:
+
+```python
+held = unboxr.new_report()
+try:
+    prepared = unboxr.prepare_source("manual.docx", workspace=Path("./unpacked"),
+                                     report=held)
+except ValueError:
+    print(held.amputation_count(), "container(s) were not opened")
 ```
 
 Lower-level entry points -- `categorize_archive`, `is_archive`, `is_url`,
@@ -102,19 +119,36 @@ logging.basicConfig(level=logging.INFO)
 ## What could not be opened
 
 `unboxr` will refuse, skip or fail on some containers. Every one of those
-**amputates** the tree you get back, and every one is announced through the
-logging system, at the informational level or above:
+**amputates** the tree you get back, and every one is in
+`prepared.report.not_opened`, with a stable cause **code**:
 
-- an office container is refused (they are zips, and their content is markup);
-- a `.7z` envelope holds several `.tar` files and only the first is extracted;
-- a nested archive fails to extract;
-- the maximum nesting depth is reached;
-- a tar archive is refused by the security filter.
+| Code | What happened |
+|---|---|
+| `office_container_excluded` | an office container was set aside by policy (they are zips, and their content is markup) |
+| `several_tars_only_first_extracted` | a `.7z` envelope held several `.tar` files and only the first was opened |
+| `extraction_failed` | a container was recognised but could not be read |
+| `maximum_depth_reached` | a container was still closed when flattening stopped |
+| `tar_refused_by_security_filter` | a tar archive was refused whole by the filter |
+| `tar_content_partly_moved` | a tar archive reached its destination only in part |
+| `zstd_not_supported` | a Zstandard container was recognised and refused |
+| `seven_zip_binary_missing` | a container needs a 7-Zip binary this machine has not got |
+
+Translate the **code**, not the text: the text is derived from the code by one
+table inside `unboxr`, so it can be reworded and the code cannot. A code your
+version does not know is a code from a later one -- keep it distinct from
+"nothing to report" rather than reading it as nothing.
+
+Two other lists sit beside it, and neither is an amputation:
+`report.still_in_tree`, where the content *is* in the tree but not where you
+would look for it, and `report.widened`, where an archive was recognised by its
+first bytes rather than by its extension -- a corpus that grows without a trace
+is no better than one that shrinks without a trace.
 
 **What could not be opened cannot be reported on: absence of a finding is never
-evidence of absence.** `--quiet` never hides any of the six: the most frequent
-of them, the office container, is announced at the informational level, so quiet
-mode keeps that one too rather than raising the threshold blindly.
+evidence of absence.** The command line says the same thing out loud, and
+`--quiet` never hides any of it: the most frequent amputation, the office
+container, is announced at the informational level, so quiet mode keeps that one
+too rather than raising the threshold blindly.
 
 Zstandard is a special case: it is **recognised** and then **refused out loud**,
 with an exception carrying the reason. Recognising it is the point -- an
@@ -127,7 +161,9 @@ the PATH, or the default install location on Windows). Without it, those
 formats fail to extract -- announced, never silent. `unboxr` does not bundle,
 download or install it.
 
-Count them yourself rather than trusting a number in a README:
+Every report says which binary was found, if any, and how many of the
+recognised extensions depend on it -- measured on the machine that ran, not
+supposed. Count them yourself rather than trusting a number in a README:
 
 ```sh
 python -c "import unboxr; t=unboxr.CATEGORY_BY_EXT; \
@@ -147,7 +183,7 @@ strictly local. There is no telemetry, no update check, and no index lookup.
 
 ## Determinism contract
 
-`unboxr` guarantees these three properties. Everything else belongs to you.
+`unboxr` guarantees these four properties. Everything else belongs to you.
 
 1. **Traversal order.** Flattening, and the selection of the single `.tar`
    inside a `.7z` envelope, both iterate in the order of the POSIX relative
@@ -182,6 +218,15 @@ strictly local. There is no telemetry, no update check, and no index lookup.
    final name is not this package's to promise: it is the name the input
    already carries on the file system it came from.
 
+4. **The corpus report.** Every amputation of the corpus -- a container refused
+   by policy, one recognised and not opened for want of a capability, one that
+   failed to be read, one still closed when flattening stopped -- is in the
+   report `prepare_source` *returns*, and the report is returned on every way
+   out, the one that extracts nothing included. A report may also be passed in,
+   and one that was survives the exception that ends a run. Each entry carries
+   a stable cause **code**; its English text is derived from that code by one
+   table, in `unboxr.report`, and never written a second time.
+
 ### What the contract does not guarantee
 
 - **No symbolic-link containment** in flattening. Links inside an extracted tree
@@ -193,6 +238,10 @@ strictly local. There is no telemetry, no update check, and no index lookup.
 - **No guarantee that the tree matches what earlier versions produced**: the tar
   security filter refuses archives they extracted. In exchange, the behaviour is
   now stable from one Python release to the next.
+- **No guarantee on what the report says about content.** It names containers
+  and what became of them; it hashes nothing, opens nothing to look inside, and
+  *an absent entry establishes nothing* -- the oracle is positive only, here as
+  everywhere else.
 - **No guarantee that the provisional extraction name stays provisional.** It is
   normally transitory -- the directory is renamed as soon as the archive is gone
   -- but it becomes the *definitive* name of that directory whenever the rename

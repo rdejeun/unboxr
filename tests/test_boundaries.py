@@ -34,6 +34,7 @@ sys.path.insert(0, str(REPO_ROOT))
 import unboxr  # noqa: E402
 import unboxr.cli  # noqa: E402
 import unboxr.extraction  # noqa: E402
+import unboxr.report  # noqa: E402
 
 # Modules of this package: not dependencies. Removing them from the residue
 # relaxes NOTHING -- the ratchet is on THIRD-PARTY roots, and it stays at zero.
@@ -88,6 +89,23 @@ def _package_files() -> list[Path]:
     return sorted(PACKAGE_ROOT.glob("*.py"))
 
 
+def _imported_package_modules() -> list:
+    """Every module of the package, IMPORTED, derived from the files on disk.
+
+    A hard-coded tuple of names was what this helper replaced on 12 September
+    2026: it named three modules, and a fourth would have crossed the guard
+    below without ever being looked at. A list written by hand goes stale at
+    the next module; one derived from `_package_files()` cannot.
+    """
+    import importlib
+
+    modules = []
+    for path in _package_files():
+        name = "unboxr" if path.name == "__init__.py" else f"unboxr.{path.stem}"
+        modules.append(importlib.import_module(name))
+    return modules
+
+
 def _import_roots(tree: ast.Module) -> set[str]:
     roots = set()
     for node in ast.walk(tree):
@@ -101,9 +119,24 @@ def _import_roots(tree: ast.Module) -> set[str]:
 class TestDependencyBoundary(unittest.TestCase):
 
     def test_the_package_has_python_modules_to_guard(self):
-        """A guard over an empty set proves nothing."""
+        """A guard over an empty set proves nothing.
+
+        `report.py` was added on 12 September 2026, DELIBERATELY and with this
+        ratchet going red to say so. The extraction report needed a module of
+        its own: `cli.py` imports `extraction`, so `extraction` cannot import
+        `cli`, which is precisely why the amputation tables had ended up in the
+        command where they did not belong. A third module is what lets both
+        read them. A ratchet like this one exists to make an addition DECLARED,
+        not to make it impossible.
+
+        The set asserted here is the one `_package_files()` returns, and every
+        other guard in this file iterates that same helper: adding a module to
+        the package therefore brings it under all of them at once, and this
+        assertion is what says so out loud.
+        """
         names = {path.name for path in _package_files()}
-        self.assertEqual({"__init__.py", "cli.py", "extraction.py"}, names)
+        self.assertEqual({"__init__.py", "cli.py", "extraction.py", "report.py"},
+                         names)
 
     def test_no_third_party_import_anywhere_in_the_package(self):
         """By AST, never by `grep`: a textual search reads commented-out code,
@@ -152,7 +185,7 @@ class TestVocabularyBoundary(unittest.TestCase):
         """Two forms, because they fail for different reasons: the attribute
         catches a constant defined and re-exported, the token catches one
         written and never read."""
-        for module in (unboxr, unboxr.cli, unboxr.extraction):
+        for module in _imported_package_modules():
             with self.subTest(module=module.__name__):
                 self.assertFalse(hasattr(module, "DEPEND_ARBITRAGE"))
         for path in _package_files():
@@ -221,7 +254,7 @@ class TestPackagingBoundary(unittest.TestCase):
         self.assertIn("version", self.pyproject["project"]["dynamic"])
         self.assertEqual({"attr": "unboxr.__version__"},
                          self.pyproject["tool"]["setuptools"]["dynamic"]["version"])
-        self.assertEqual("0.1.0", unboxr.__version__)
+        self.assertEqual("1.0.0", unboxr.__version__)
         source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("importlib.metadata", source)
 

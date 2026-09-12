@@ -1,14 +1,16 @@
 """The `unboxr` command line: a deliberate floor, and the one thing it owns.
 
-The command is the ONLY part of the package that configures logging. It is also
-the only part that can restore, today, a guarantee the library gives up by going
-silent: an amputation of the corpus must be announced. It does that with a
-COUNTER on the six NAMED amputations -- not by counting warnings, since
-several warnings of the module (the machine-dependent naming fallback among
-them) are not amputations at all.
+The command is the ONLY part of the package that configures logging. It used to
+be the only part that could restore, at all, a guarantee the library gives up by
+going silent -- and it did that by READING ITS OWN LOGGING RECORDS, matching
+each one against the exact format strings the library emits. The library now
+RETURNS a report, and the command counts containers off it: one container, one
+entry, however many call sites and however many nesting levels looked at it.
 
-`--quiet` therefore cannot mean "warnings only": the most frequent amputation,
-an office container being refused, is announced at the informational level.
+`--quiet` still cannot mean "warnings only": the most frequent amputation, an
+office container being refused, is announced at the informational level. That
+filter is the one that survives, and it reads the format strings from
+`unboxr.report`, the table's one home, never from a copy.
 
 100% offline: no network, no 7-Zip binary, no versioned fixture.
 """
@@ -32,7 +34,8 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from unboxr import __version__, cli  # noqa: E402
+from unboxr import __version__, cli, report  # noqa: E402
+from unboxr.report import PreparedSource  # noqa: E402
 
 
 @contextlib.contextmanager
@@ -93,11 +96,16 @@ class TestEntryPointAndSurface(_CommandBench):
         self.assertIn(__version__, out + err)
 
     def test_help_lists_the_minimal_surface_and_nothing_more(self):
+        """"And nothing more" was in the name and in nothing else: the body
+        was four `assertIn`, so ADDING an option left it green. Measured on
+        12 September 2026, and the third instance of that defect found in this
+        repository. The assertion is now on the COMPLETE set."""
         code, out, _ = self._run(["--help"])
         self.assertEqual(0, code)
-        for option in ("--verbose", "--quiet", "--version", "--help"):
-            with self.subTest(option=option):
-                self.assertIn(option, out)
+        listed = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", out))
+        self.assertEqual({"--verbose", "--quiet", "--version", "--help"}, listed)
+        short = set(re.findall(r"(?<![\w-])-[a-z](?![\w-])", out))
+        self.assertEqual({"-v", "-q", "-h"}, short)
 
     def test_the_command_has_no_self_check_gate(self):
         """No `--controle`, no `--strict`: those belong to the project this code
@@ -118,14 +126,22 @@ class TestEntryPointAndSurface(_CommandBench):
         code, _, _ = self._run(["only-one-argument"])
         self.assertEqual(2, code)
 
-    def test_the_floor_is_declared_in_the_module_docstring(self):
-        """Declared, so that later work adds to a stated floor rather than
-        discovering one."""
+    def test_the_floor_is_declared_and_says_what_was_added_to_it(self):
+        """Declared, so that later work adds to a STATED floor rather than
+        discovering one.
+
+        The docstring used to forbid, literally, what this story then did:
+        "do not design their options here". The command was always meant to be
+        enriched here and again by the document story; what it must keep saying
+        is which floor it is now standing on, and what is still not its job.
+        """
         # Whitespace-normalised: the docstring is wrapped prose, and a
         # sentence can straddle a line break.
         flat = re.sub(r"\s+", " ", cli.__doc__.lower())
         self.assertIn("floor", flat)
-        self.assertIn("do not design their options here", flat)
+        self.assertIn("summarises what could not be opened", flat)
+        self.assertIn("writes no document", flat)
+        self.assertNotIn("do not design their options here", flat)
 
 
 class TestExtractionThroughTheCommand(_CommandBench):
@@ -178,11 +194,17 @@ class TestExtractionThroughTheCommand(_CommandBench):
         download happens."""
         seen = {}
 
-        def fake_prepare(source, workspace=None):
+        def fake_prepare(source, workspace=None, report=None):
             seen["source"] = source
             seen["workspace"] = workspace
+            seen["report"] = report
             (workspace / "extracted").mkdir(parents=True)
-            return workspace / "extracted", "undetermined", "0" * 64
+            # `PreparedSource` imported by name, not read off the module: the
+            # parameter above is called `report` because the real signature
+            # calls it that, and it shadows the module inside this function.
+            return PreparedSource(
+                tree=workspace / "extracted", nature="undetermined",
+                digest="0" * 64, report=report)
 
         with mock.patch.object(cli, "prepare_source", fake_prepare):
             code, _, _ = self._run(["https://example.invalid/pkg.tar.gz",
@@ -190,6 +212,9 @@ class TestExtractionThroughTheCommand(_CommandBench):
         self.assertEqual(0, code)
         self.assertEqual("https://example.invalid/pkg.tar.gz", seen["source"])
         self.assertEqual(self.dir / "out", seen["workspace"])
+        self.assertIsNotNone(seen["report"], "the command creates the report "
+                                             "and hands it over, so that a "
+                                             "failure still declares")
 
     def test_the_command_never_leaves_a_temporary_tree_behind(self):
         """The destination is a parameter precisely so the command does not
@@ -237,15 +262,23 @@ class TestAmputationsAreNeverHidden(_CommandBench):
         over the warnings of the module.
         """
         warnings = self._emitted_format_strings("warning")
-        classified = set(cli.AMPUTATION_MESSAGES.values()) | cli.NOT_AN_AMPUTATION
+        classified = (set(report.AMPUTATION_MESSAGES.values())
+                      | set(report.NOT_AN_AMPUTATION.values()))
         self.assertEqual(
             set(), warnings - classified,
             "a warning of unboxr.extraction is in neither AMPUTATION_MESSAGES "
             "nor NOT_AN_AMPUTATION. Decide which it is: if it says a container "
-            "was not opened, it is an amputation and the counter must see it.")
+            "was not opened, it is an amputation and the report must see it.")
         self.assertEqual(
-            set(), cli.NOT_AN_AMPUTATION - warnings,
+            set(), set(report.NOT_AN_AMPUTATION.values()) - warnings,
             "NOT_AN_AMPUTATION names a message the module no longer emits")
+        # The arithmetic the two tables have to keep adding up to. Twelve
+        # warnings: five amputations at warning level -- the sixth, the office
+        # container, is an `info` -- and seven declared non-amputations.
+        self.assertEqual(12, len(warnings))
+        self.assertEqual(
+            5, len(set(report.AMPUTATION_MESSAGES.values()) & warnings))
+        self.assertEqual(7, len(report.NOT_AN_AMPUTATION))
 
     def test_the_six_amputations_are_named_and_really_emitted_by_the_module(self):
         """The counter matches on the exact format strings of the module. This
@@ -253,17 +286,19 @@ class TestAmputationsAreNeverHidden(_CommandBench):
         emitted there -- so a reworded message cannot silently stop counting."""
         emitted = self._emitted_format_strings()
 
-        self.assertEqual(6, len(cli.AMPUTATION_MESSAGES))
-        for name, message in cli.AMPUTATION_MESSAGES.items():
-            with self.subTest(amputation=name):
+        self.assertEqual(6, len(report.AMPUTATION_MESSAGES))
+        for code, message in report.AMPUTATION_MESSAGES.items():
+            with self.subTest(amputation=code):
                 self.assertIn(message, emitted)
-        self.assertIn(cli.CORPUS_WIDENING_MESSAGE, emitted,
+        self.assertIn(report.CORPUS_WIDENING_MESSAGE, emitted,
                       "the corpus WIDENING message is named the same way, and "
-                      "deliberately left out of the counter")
+                      "deliberately left out of the amputation count")
 
     def test_the_corpus_widening_message_is_not_counted_as_an_amputation(self):
-        self.assertNotIn(cli.CORPUS_WIDENING_MESSAGE,
-                         cli.AMPUTATION_MESSAGES.values())
+        self.assertNotIn(report.CORPUS_WIDENING_MESSAGE,
+                         report.AMPUTATION_MESSAGES.values())
+        self.assertNotEqual(report.NOT_OPENED,
+                            report.CAUSE_KINDS[report.RECOGNISED_BY_CONTENT])
 
     def test_the_provisional_naming_warning_is_not_counted_as_an_amputation(self):
         """It is a warning, and it is not an amputation: nothing was left
@@ -271,7 +306,7 @@ class TestAmputationsAreNeverHidden(_CommandBench):
         made the oracle reminder fire on it."""
         source = (REPO_ROOT / "unboxr" / "extraction.py").read_text(encoding="utf-8")
         self.assertIn("provisional name derived", source)
-        for message in cli.AMPUTATION_MESSAGES.values():
+        for message in report.AMPUTATION_MESSAGES.values():
             self.assertNotIn("provisional name", message)
 
     def test_a_rename_that_fails_is_declared_and_is_not_an_amputation(self):
@@ -282,9 +317,9 @@ class TestAmputationsAreNeverHidden(_CommandBench):
         message = ("%s: the extracted content could not be renamed to %s (%s): "
                    "it stays under its provisional name %s. Its content IS in "
                    "the extracted tree, under that name.")
-        self.assertIn(message, cli.NOT_AN_AMPUTATION)
+        self.assertIn(message, report.NOT_AN_AMPUTATION.values())
         self.assertIn(message, self._emitted_format_strings("warning"))
-        self.assertNotIn(message, cli.AMPUTATION_MESSAGES.values())
+        self.assertNotIn(message, report.AMPUTATION_MESSAGES.values())
 
     def test_an_amputation_triggers_the_positive_only_oracle_reminder(self):
         archive = self._archive_with_an_office_container()
@@ -292,6 +327,47 @@ class TestAmputationsAreNeverHidden(_CommandBench):
         self.assertEqual(0, code)
         self.assertIn("were not opened during this run", err)
         self.assertIn("absence of a finding is never evidence of absence", err)
+
+    def test_the_failure_path_still_declares_what_was_lost_before_it(self):
+        """The one guarantee the counter on logging records did deliver, and
+        the reason a report is passed IN as well as returned. An office
+        container is refused -- the most frequent amputation there is -- and
+        THEN the run fails with nothing to return. Removing the counter without
+        putting this in its place would have been a regression dressed up as a
+        simplification."""
+        office = self.dir / "manual.docx"
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as z:
+            z.writestr("word/document.xml", "<w:document/>")
+        office.write_bytes(inner.getvalue())
+
+        code, out, err = self._run([str(office), str(self.dir / "out")])
+
+        self.assertEqual(1, code)
+        self.assertEqual("", out.strip())
+        self.assertIn("office container", err)
+        self.assertIn("were not opened during this run", err)
+
+    def test_the_count_shown_is_containers_and_no_longer_logging_records(self):
+        """One office container, met at four call sites and at every nesting
+        level, used to be counted several times over. The reminder now names
+        ONE."""
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as z:
+            z.writestr("word/document.xml", "<w:document/>")
+        deepest = io.BytesIO()
+        with zipfile.ZipFile(deepest, "w") as z:
+            z.writestr("code/aes.c", "int a;")
+        middle = io.BytesIO()
+        with zipfile.ZipFile(middle, "w") as z:
+            z.writestr("third.zip", deepest.getvalue())
+        archive = self._zip("package.zip", [("doc/report.docx", inner.getvalue()),
+                                            ("second.zip", middle.getvalue())])
+
+        code, _, err = self._run([str(archive), str(self.dir / "out")])
+
+        self.assertEqual(0, code)
+        self.assertIn("1 container(s) were not opened during this run", err)
 
     def test_a_clean_run_does_not_show_the_reminder(self):
         """It reports what happened; it is not a disclaimer stapled to every
@@ -345,9 +421,9 @@ class TestTheLibraryStaysSilent(_CommandBench):
         out, err = io.StringIO(), io.StringIO()
         with _isolated_logger():
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                tree, nature, digest = ux.prepare_source(
+                prepared = ux.prepare_source(
                     str(archive), workspace=self.dir / "silent")
-        self.assertTrue((tree / "src" / "a.txt").is_file())
+        self.assertTrue((prepared.tree / "src" / "a.txt").is_file())
         self.assertEqual("", out.getvalue())
         self.assertEqual("", err.getvalue())
 
@@ -359,16 +435,30 @@ class TestTheLibraryStaysSilent(_CommandBench):
     def test_the_library_never_calls_basic_config(self):
         """`basicConfig` in imported code overwrites the caller's own logging
         setup -- the most common way to get this pattern wrong, and invisible in
-        a unit test that does not look for it."""
-        for name in ("__init__.py", "extraction.py"):
-            with self.subTest(module=name):
-                source = (REPO_ROOT / "unboxr" / name).read_text(encoding="utf-8")
+        a unit test that does not look for it.
+
+        The list of modules is DERIVED from the package, not written out. It
+        named two files until 12 September 2026, so a third module would have
+        crossed this guard without ever being looked at."""
+        library = [path for path in sorted((REPO_ROOT / "unboxr").glob("*.py"))
+                   if path.name != "cli.py"]
+        self.assertGreater(len(library), 2, "a guard over two files while the "
+                                            "package has more proves less than "
+                                            "it claims")
+        for path in library:
+            with self.subTest(module=path.name):
+                source = path.read_text(encoding="utf-8")
                 self.assertNotIn("basicConfig", source)
                 self.assertNotIn("StreamHandler", source)
 
     def test_only_the_command_module_configures_logging(self):
-        source = (REPO_ROOT / "unboxr" / "cli.py").read_text(encoding="utf-8")
-        self.assertIn("StreamHandler", source)
+        """"Only" was in the name and in nothing else: the body asserted the
+        PRESENCE of a `StreamHandler` in `cli.py` and stopped there, proving
+        nothing about the rest of the package. Both halves are now asserted."""
+        configuring = {path.name
+                       for path in sorted((REPO_ROOT / "unboxr").glob("*.py"))
+                       if "StreamHandler" in path.read_text(encoding="utf-8")}
+        self.assertEqual({"cli.py"}, configuring)
 
 
 if __name__ == "__main__":

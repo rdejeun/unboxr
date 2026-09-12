@@ -22,6 +22,26 @@ the new behaviour would erase exactly that distinction, which is why it is not
 done. The figures above are a reading taken on that date, not a target to keep
 green -- they will drift as the rest of the work lands.
 
+READING TAKEN AGAIN ON 12 SEPTEMBER 2026, AFTER THE EXTRACTION REPORT LANDED
+---------------------------------------------------------------------------
+36 tests, 33 failures and 2 errors -- against 19 failures and 1 error before
+it, the story's own remeasured figure for that same date (the paragraph above
+still reads "13 failures and 2 errors", the number 14.2 declared and this
+story's own remeasurement later found stale -- kept there unchanged, as a
+historical reading, not as the "before" this note compares against). The same
+boundary, doing the same job, on a larger deliberate change: the
+chain now fills a returned report as it extracts, `prepare_source` hands back a
+named object instead of a triplet, and three refusals travel on an exception
+carrying a stable cause code.
+
+The counters below drift with it and are NOT updated: `EXPECTED_LOGGING_SITES`
+reads 19 where the package now has 21, `EXPECTED_WARNING_SITES` reads 10 where
+it has 12. Those two figures were true of the package on the day this proof was
+pinned and they are kept as that reading, not corrected into a target. The
+closed list of declared divergences is NOT extended either: extending it would
+erase the very distinction this directory exists to draw, between "proved
+equivalent" and "changed on purpose".
+
 What happens to this directory next -- kept frozen as a historical record, or
 removed with the upstream block it compares against -- is not settled here.
 

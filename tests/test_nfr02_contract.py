@@ -1,10 +1,11 @@
 """The determinism contract, tested as a contract and not as prose.
 
-`unboxr.extraction` writes down three guarantees and six non-guarantees. This
-file holds the three guarantees by PROPERTY -- a test that only grepped the
-docstring would go green on a module that had stopped honouring it -- and holds
-the six non-guarantees by presence, because a silently deleted non-guarantee
-reads as a promise.
+`unboxr.extraction` writes down four guarantees and seven non-guarantees. This
+file holds the first three guarantees by PROPERTY -- a test that only grepped
+the docstring would go green on a module that had stopped honouring it -- and
+holds the non-guarantees by presence, because a silently deleted non-guarantee
+reads as a promise. The fourth guarantee, the corpus report, is held by property
+in `test_report.py` and `test_report_of_the_chain.py`, where the archives are.
 
 Guarantee 1 needs care. A real directory tree is NOT enough: the file systems in
 common use already enumerate entries in near-sorted order, so a test built on
@@ -44,7 +45,7 @@ import unboxr.extraction as ux  # noqa: E402
 
 PROVISIONAL_NAME_SHAPE = re.compile(r"^archive_[0-9a-f]{16}$")
 
-# The six things the contract explicitly does NOT guarantee. Each entry is a
+# The seven things the contract explicitly does NOT guarantee. Each entry is a
 # fragment that must appear in the written contract. They are held here because
 # a non-guarantee that quietly disappears from the documentation turns into an
 # implied promise -- the exact opposite of what it was written for.
@@ -58,6 +59,10 @@ DECLARED_NON_GUARANTEES = (
     "when the 7-Zip binary is absent",
     "the tar security filter was made mandatory",
     "provisional extraction name stays provisional",
+    # Added 12 September 2026 with the corpus report: the report names
+    # containers, it says nothing about what is inside them, and an absent entry
+    # is not evidence of anything.
+    "AN ABSENT ENTRY ESTABLISHES NOTHING",
 )
 
 
@@ -324,8 +329,8 @@ class TestTheWrittenContract(unittest.TestCase):
         cls.docstring = _flatten(ux.__doc__ or "")
         cls.readme = _flatten((REPO_ROOT / "README.md").read_text(encoding="utf-8"))
 
-    def test_the_six_non_guarantees_are_written_in_the_module(self):
-        self.assertEqual(6, len(DECLARED_NON_GUARANTEES),
+    def test_the_seven_non_guarantees_are_written_in_the_module(self):
+        self.assertEqual(7, len(DECLARED_NON_GUARANTEES),
                          "the count is part of what this file asserts: update "
                          "the name of this test and the docstring above with it")
         for fragment in DECLARED_NON_GUARANTEES:
@@ -342,9 +347,24 @@ class TestTheWrittenContract(unittest.TestCase):
 
     def test_the_contract_is_written_in_the_readme_too(self):
         for heading in ("Traversal order", "Extraction directory names",
-                        "POSIX paths", "does not guarantee"):
+                        "POSIX paths", "corpus report", "does not guarantee"):
             with self.subTest(heading=heading):
                 self.assertIn(heading, self.readme)
+
+    def test_what_the_report_guarantees_is_written_in_both_texts(self):
+        """The guarantee, and its limit, in the two places the contract lives.
+        A guarantee written in only one of them is a guarantee that drifts:
+        the module and the README are compared here for exactly that reason.
+
+        Case-folded: the module docstring shouts the limit in capitals and the
+        README italicises it, which is a difference of typography and not of
+        contract."""
+        for claim in ("every amputation of the corpus",
+                      "the report is returned on every way out",
+                      "an absent entry establishes nothing"):
+            with self.subTest(claim=claim):
+                self.assertIn(claim, self.docstring.lower())
+                self.assertIn(claim, self.readme.lower())
 
     def test_the_two_directory_names_are_told_apart_in_both_texts(self):
         """Headings alone said nothing about what guarantee 2 promises, and it

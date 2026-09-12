@@ -1,10 +1,27 @@
 """The `unboxr` command line.
 
-A DELIBERATE FLOOR, not a finished interface. It does one thing: open an
-archive into a destination directory and say where the result is. It reports
-nothing structured, writes no document, and offers no option beyond verbosity
-and version. Later work will add a structured report and a document; do not
-design their options here, and do not grow this module in anticipation of them.
+A DELIBERATE FLOOR, and one that has now been added to once. It opens an
+archive into a destination directory, says where the result is, and summarises
+what could not be opened. It writes no document and offers no option beyond
+verbosity and version; the document, and the options it will need, are later
+work and are not designed here.
+
+WHAT CHANGED, AND WHY IT MATTERS MORE THAN IT LOOKS. This command used to learn
+about amputations of the corpus by READING ITS OWN LOGGING RECORDS: a
+`logging.Filter` sat on the handler and matched each record against the exact
+format strings the library emits. It worked, and it was fragile -- a counter
+matching on a format string is the very "discipline of print" a structured
+report exists to replace, and it counted RECORDS, so one office container seen
+at four call sites and at every nesting level counted several times over.
+
+The count now comes from the report the library RETURNS, where the identity of
+an entry is the pair (cause, path). One container, one entry.
+
+The filter that survives is `_QuietFilter`, and it survives for a reason of its
+own: `--quiet` must never drop below what declares an amputation, and the most
+frequent amputation of all -- an office container being refused -- is emitted at
+the INFORMATIONAL level. That filter reads the format strings from
+`unboxr.report`, the table's one home, never from a copy.
 
 `unboxr` has no self-check gate, no strict mode, and renders no verdict of any
 kind.
@@ -21,134 +38,23 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .extraction import prepare_source
-
-# The SIX amputations of the corpus, named one by one.
-#
-# An amputation is a container that was NOT opened: whatever it held is absent
-# from the extracted tree, so absence of a finding downstream proves nothing
-# about it. The counter below drives the closing reminder.
-#
-# The keys are the exact logging format strings emitted by `unboxr.extraction`.
-# Matching on the format string -- not on the formatted message, and not on the
-# level -- is what makes this a counter on NAMED amputations rather than a
-# counter on warnings: several warnings of the module are NOT amputations and
-# must not be counted, among them the one raised when an archive lies outside
-# the analysed root and its provisional name has to be derived from an absolute
-# path. A test walks the AST of `extraction.py` and fails if any of these
-# strings is no longer emitted there, so a reworded message cannot silently stop
-# being counted.
-AMPUTATION_MESSAGES = {
-    "office container refused": (
-        "%s: office container, excluded from extraction -- its "
-        "content is not the material this tool opens."
-    ),
-    "several tars in a .7z envelope, only the first extracted": (
-        "The .7z envelope contains %s .tar files. Only the first in "
-        "sorted order is extracted: %s. NOT EXTRACTED: %s. No "
-        "conclusion can be drawn from the absence of a finding on "
-        "those archives."
-    ),
-    "nested archive failed to extract": (
-        "Extraction of %s (%s) failed: %s (archive kept as is). "
-        "Its content is NOT in the extracted tree."
-    ),
-    "maximum nesting depth reached": (
-        "Maximum depth (%s) reached: flattening stops, archives may "
-        "remain unopened. Their content is NOT in the extracted tree."
-    ),
-    "tar archive refused by the security filter": (
-        "Tar member refused by the security filter: %s (%s). The "
-        "archive is NOT extracted: no conclusion can be drawn from "
-        "the absence of a finding on its content."
-    ),
-    # Added on 9 September 2026, with the repair that produced it: a tar whose
-    # staged content could not be moved into the destination in full leaves an
-    # INCOMPLETE tree. Incomplete is a kind of absent, and the caller must not
-    # read the missing part as "nothing was there".
-    "tar content only partly moved into its destination": (
-        "%s: the extracted content could not be moved into %s in "
-        "full. That directory now holds an INCOMPLETE extraction: no "
-        "conclusion can be drawn from the absence of a finding on "
-        "its content."
-    ),
-}
-
-# Warnings the module emits that are NOT amputations, each with its reason.
-# This set exists so that the two together are EXHAUSTIVE over the warnings of
-# `unboxr.extraction`: a test requires every warning to be in one list or the
-# other. Without it, a warning added later is counted by nothing and named by
-# nothing -- which is exactly how the partial-move amputation above went
-# uncounted the day it was written (code review, 9 September 2026).
-NOT_AN_AMPUTATION = {
-    # Nothing is lost: the two contents end up in the same directory. The
-    # warning exists because a SILENT merge is untraceable, not because the
-    # corpus shrank. The nested one bears on the PROVISIONAL directory, whose
-    # name is derived from the archive's own path -- so the only thing that can
-    # already hold it is an earlier run over the same workspace.
-    "%s: its provisional extraction directory %s already holds content, "
-    "left by an earlier run over this workspace; the two are mixed there, "
-    "with no further warning.",
-    "Destination %s already holds content; extracting into it merges "
-    "the two, with no further warning.",
-    # The content IS in the extracted tree; only the source archive survived.
-    # It stays under the provisional name, the rename being skipped: its
-    # target is the archive that could not be removed.
-    "%s was extracted successfully but could not be removed (%s): the "
-    "archive is kept, and its content stays under the provisional name "
-    "%s. Its content IS in the extracted tree.",
-    # The content is on disk and complete, only under a name the consumer did
-    # not ask for. This is where the provisional name stops being provisional,
-    # which is why the determinism contract declares it.
-    "%s: the extracted content could not be renamed to %s (%s): it stays "
-    "under its provisional name %s. Its content IS in the extracted tree, "
-    "under that name.",
-    # A RECAP of amputations already counted one by one. Counting it again
-    # would inflate the total by one per run.
-    "Flattening finished, but %s archive(s) were left unopened: %s. "
-    "Their content is NOT in the extracted tree.",
-    # A naming caveat, not a loss -- and the reason the counter matches on
-    # named amputations rather than on warnings. The provisional name is now
-    # produced for EVERY archive; this warning stays rare, it fires only for an
-    # archive found outside the analysed root.
-    "Archive outside the analysed root, provisional name derived from the "
-    "absolute path: %s. The produced name depends on the machine.",
-    # Content is REPLACED here, not lost from the run in progress: what this
-    # extraction writes IS in the tree afterward, only the content that
-    # previously sat at that path is not. Reachable when a reused workspace's
-    # earlier flattening pass left a directory at a path this extraction's
-    # own raw member now occupies (story 14.2 of the upstream project,
-    # crypto-scan).
-    "%s: %s already held content as a directory of a different origin; it "
-    "is discarded, not merged, to make room for this extraction.",
-}
-
-# Not an amputation: the corpus GROWS here, because an archive was recognised by
-# its content. Named for the same reason -- a corpus that grows without a trace
-# is no better than one that shrinks without a trace -- and kept out of the
-# counter on purpose.
-CORPUS_WIDENING_MESSAGE = (
-    "%s: archive recognised by its CONTENT (%s) -- extension "
-    "absent or misleading."
-)
+from .extraction import new_report, prepare_source
+from .report import AMPUTATION_MESSAGES, text_for
 
 ORACLE_REMINDER = (
     "%s container(s) were not opened during this run. What could not be opened "
     "cannot be reported on: absence of a finding is never evidence of absence."
 )
 
-
-class AmputationCounter(logging.Filter):
-    """Counts the named amputations passing through the package logger."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.count = 0
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if record.msg in AMPUTATION_MESSAGES.values():
-            self.count += 1
-        return True
+# The two per-entry format strings `summarise` logs from the report -- its own
+# deduplicated declaration, distinct from the raw per-event messages of
+# `AMPUTATION_MESSAGES` emitted while extraction is still running. `--quiet`
+# must keep both: the aggregate is what a caller who missed the live warnings
+# (or who only ever reads the failure path, where `summarise` runs once, at
+# the end) is left with. Named here, not inlined twice, so the filter and the
+# emitter cannot drift apart. Verified in code review, story 14.3.
+NOT_OPENED_LINE = "Not opened -- %s: %s"
+STILL_IN_TREE_LINE = "In the tree, elsewhere -- %s: %s"
 
 
 class _QuietFilter(logging.Filter):
@@ -159,10 +65,18 @@ class _QuietFilter(logging.Filter):
     informational level, so a quiet mode that simply raised the threshold to
     warnings would silence it. Muting an amputation on request would contradict
     the positive-only oracle this package is built on.
+
+    It matches on the format strings of `unboxr.report`, the table's one home,
+    plus `summarise`'s own two aggregate lines -- its report-driven replacement
+    for the per-event messages, which quiet mode must not hide either.
+    A copy kept here would drift from it the first time a message was reworded,
+    and nothing would say so.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return record.levelno >= logging.WARNING or record.msg in AMPUTATION_MESSAGES.values()
+        return (record.levelno >= logging.WARNING
+                or record.msg in AMPUTATION_MESSAGES.values()
+                or record.msg in (NOT_OPENED_LINE, STILL_IN_TREE_LINE))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -201,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def configure_logging(verbose: bool, quiet: bool) -> AmputationCounter:
+def configure_logging(verbose: bool, quiet: bool) -> None:
     """Set up logging for the command line, and only for it."""
     package_logger = logging.getLogger("unboxr")
     package_logger.setLevel(logging.DEBUG if verbose else logging.INFO)
@@ -210,22 +124,46 @@ def configure_logging(verbose: bool, quiet: bool) -> AmputationCounter:
     handler.setLevel(logging.DEBUG if verbose else logging.INFO)
     handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
 
-    # THE COUNTER GOES ON THE HANDLER, AND FIRST.
-    #
-    # On the logger it would never fire: `unboxr.extraction` emits on its own
-    # child logger, and a parent's FILTERS are not applied to a propagated
-    # record -- only its HANDLERS are. A counter installed on `unboxr` itself
-    # would sit there reading zero for ever, and the oracle reminder would never
-    # be shown on a run that did amputate the corpus.
-    #
-    # First, because `logging` stops at the first filter that rejects: behind
-    # the quiet filter, the counter would stop seeing whatever quiet mode drops.
-    counter = AmputationCounter()
-    handler.addFilter(counter)
     if quiet:
         handler.addFilter(_QuietFilter())
     package_logger.addHandler(handler)
-    return counter
+
+
+def summarise(report, logger: logging.Logger) -> None:
+    """Say what the report holds, in prose, at the informational level.
+
+    NO DOCUMENT IS WRITTEN and nothing structured reaches `stdout`, which stays
+    reserved for the path of the extracted tree -- the one output of this
+    program that is not a logging record. A consumer piping `unboxr a.zip d`
+    into something else must not find a summary in the middle of it.
+    """
+    logger.info("Containers opened: %s.", len(report.opened))
+    if report.depth_limit is not None:
+        logger.info("Flattening reached level %s of at most %s.",
+                    report.depth_reached, report.depth_limit)
+    profile = report.capability
+    if profile.seven_zip_available:
+        logger.info("7-Zip binary in use: %s (%s of the %s recognised "
+                    "extensions need it).", profile.seven_zip_binary,
+                    profile.extensions_needing_seven_zip,
+                    profile.recognised_extensions)
+    else:
+        logger.info("No 7-Zip binary on this machine: %s of the %s recognised "
+                    "extensions cannot be opened here.",
+                    profile.extensions_needing_seven_zip,
+                    profile.recognised_extensions)
+    for entry in report.not_opened:
+        logger.info(NOT_OPENED_LINE, entry.path, text_for(entry.code))
+    for entry in report.still_in_tree:
+        logger.info(STILL_IN_TREE_LINE, entry.path, text_for(entry.code))
+    # `report.widened` is part of the published report surface (README, "Use
+    # it as a library") but was missing here: the corpus GREW here, which is
+    # not an amputation, so it stays outside `--quiet`'s guarantee -- but the
+    # reference summary this function is meant to be a complete rendering of
+    # must still say it. Verified in code review, story 14.3.
+    for entry in report.widened:
+        logger.info("Recognised by content -- %s: %s", entry.path,
+                    text_for(entry.code))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -238,24 +176,39 @@ def main(argv: list[str] | None = None) -> int:
     if destination.is_dir() and any(destination.iterdir()):
         parser.error(f"destination exists and is not empty: {destination}")
 
-    counter = configure_logging(args.verbose, args.quiet)
+    configure_logging(args.verbose, args.quiet)
     logger = logging.getLogger("unboxr.cli")
 
+    # THE REPORT IS CREATED HERE, BEFORE THE RUN, AND HELD ACROSS IT. That is
+    # what makes the failure path below able to declare: `prepare_source`
+    # returns nothing when it raises, and the amputations that happened before
+    # the failure would go with it.
+    report = new_report()
+
     try:
-        tree, nature, digest = prepare_source(args.archive, workspace=destination)
+        prepared = prepare_source(args.archive, workspace=destination,
+                                  report=report)
     except Exception as exc:
         logger.error("%s: %s", exc.__class__.__name__, exc)
-        if counter.count:
-            logger.warning(ORACLE_REMINDER, counter.count)
+        # `summarise` too, on this path, not just the numeric reminder: this
+        # is the exact moment the report exists to serve -- everything it
+        # holds from before the failure (containers opened, amputations
+        # already announced) would otherwise go unsaid, contradicting the
+        # module docstring's own claim that the failure path can declare.
+        # Verified in code review, story 14.3.
+        summarise(report, logger)
+        if report.amputation_count():
+            logger.warning(ORACLE_REMINDER, report.amputation_count())
         return 1
 
-    if counter.count:
-        logger.warning(ORACLE_REMINDER, counter.count)
+    summarise(report, logger)
+    if report.amputation_count():
+        logger.warning(ORACLE_REMINDER, report.amputation_count())
 
-    logger.info("Distribution nature: %s", nature)
-    if digest is not None:
-        logger.info("Input digest: sha256:%s", digest)
-    print(tree)
+    logger.info("Distribution nature: %s", prepared.nature)
+    if prepared.digest is not None:
+        logger.info("Input digest: sha256:%s", prepared.digest)
+    print(prepared.tree)
     return 0
 
 
