@@ -64,13 +64,23 @@ you can pipe it.
 |---|---|
 | `-v`, `--verbose` | show debug records as well |
 | `-q`, `--quiet` | warnings only -- **plus every announced amputation** |
+| `--sbom FILE` | also write the extraction document to FILE (see below) |
 | `--version` | print the version and exit |
 | `--help` | the full usage |
 
-Exit codes: `0` success, `1` extraction failure, `2` usage error.
+Exit codes: `0` success, `1` the run failed -- at extraction, **or** at writing
+the document, `2` usage error.
 
-This command line is deliberately a **floor**. It reports nothing structured and
-writes no document; later versions will.
+`--sbom` is refused before anything is extracted when the path it names would
+fall **inside the tree that is about to be inventoried**: that document claims
+to list every file present when the extraction finished, and writing it there
+makes the claim false at the moment it is written. `DESTINATION/sbom.json`,
+beside `extracted/`, is fine; `DESTINATION/extracted/sbom.json` is not. The
+same refusal applies to writing inside a source directory you handed over.
+
+This command line is deliberately a **floor**. It writes no document unless you
+ask for one, and it has no self-check gate, no strict mode and no verdict of
+any kind.
 
 ## Use it as a library
 
@@ -154,6 +164,95 @@ Zstandard is a special case: it is **recognised** and then **refused out loud**,
 with an exception carrying the reason. Recognising it is the point -- an
 unrecognised `.tar.zst` would cross the chain in silence.
 
+## The extraction document
+
+`unboxr --sbom FILE` writes a **CycloneDX 1.7** inventory of the corpus, so that
+what was extracted stops being an assertion and becomes a record you can keep.
+It holds one component per path:
+
+- every file left in the tree, with its **SHA-256** digest -- no exception of
+  extension, of size or of location;
+- every container the flattening **destroyed**, with the digest taken while it
+  still existed. A nested archive is removed once it is opened, so no walk of
+  the finished tree could ever produce this;
+- every container that was **not opened**, with its cause -- code and English
+  text, as two separate properties.
+
+It attests the presence and the digest of what it lists, and **nothing about
+what is absent from it**. It renders no verdict of any kind.
+
+The library form returns a structure and writes nothing:
+
+```python
+document = unboxr.build_document(prepared.report, prepared.tree,
+                                 source="pkg-1.2.3.tar.gz",
+                                 source_digest=prepared.digest,
+                                 source_kind="archive")
+unboxr.write_document(document, Path("sbom.json"))
+```
+
+### The properties it carries
+
+Every one of them is emitted on **every** document, including when the value is
+not computable -- in which case the non-computable state is written out. A
+property that appeared only in the favourable case would read, by its absence,
+as *not applicable* rather than *not determined*.
+
+Native CycloneDX fields -- `hashes`, `type`, `name`, `metadata.tools` -- are
+used as they are and never wrapped in a property.
+
+On `metadata.properties`, what is true of the run:
+
+| Name | Value |
+|---|---|
+| `unboxr:documentScope` | what this document does and does not attest |
+| `unboxr:oracleReminder` | absence of a finding is never evidence of absence |
+| `unboxr:volatileFields` | the fields not promised from one run to the next |
+| `unboxr:exclusionPolicy` | `none` -- see below |
+| `unboxr:sourceKind` | `archive` / `directory` / `undetermined` |
+| `unboxr:extractionOutcome` | `complete` / `failed` |
+| `unboxr:sevenZipAvailable` | `true` / `false` |
+| `unboxr:recognisedExtensions` | how many extensions this version recognises |
+| `unboxr:extensionsNeedingSevenZip` | how many of those need the binary |
+| `unboxr:depthReached` / `unboxr:depthLimit` | two numbers, or `not_applicable` |
+| `unboxr:containersNotOpened` | the size of the amputation |
+| `unboxr:filesWithoutDigest` | components whose digest state is not `computed` |
+
+On each component, what is true of one path:
+
+| Name | Value |
+|---|---|
+| `unboxr:causeCode` | the cause code or codes, or `no_entry` |
+| `unboxr:causeText` | their English texts, in the same order |
+| `unboxr:digestState` | `computed` / `read_failed` / `not_a_file` / `symlink_not_followed` |
+| `unboxr:nestingLevel` | `0`..`n`, or `unknown` |
+| `unboxr:parentContainer` | the container it came out of, `none`, or `not_determinable` |
+
+Translate the **code**, never the text: the text comes from one table and is
+allowed to be reworded.
+
+**Adding a property to the document is an addition to the contract**, and
+raises the minor version. Every property is emitted systematically, so every
+consumer sees a new one on the first document produced after the change.
+
+### `bom-ref` only means something against this document
+
+Each component's `bom-ref` is derived from its rank in the sorted order, not
+from its path -- a path would need escaping wherever a `bom-ref` is placed
+after a `#` in a BOM-Link URN. **The consequence**: a rank renumbers every
+time a file enters or leaves the corpus, so a link of the shape
+`...#unboxr-component-7` is valid against *this exact document* and not
+against "the extraction SBOM of this package" in general. That is tenable
+when two linked documents are produced together, and silent otherwise -- a
+regeneration will break the link without saying so.
+
+### What it does not do
+
+`unboxr` applies **no exclusion policy at all** -- not `__pycache__`, not
+`.git`, not `node_modules`. Whether those belong in an analysed corpus is your
+policy, applied after extraction. On a source that is already a directory, the
+document therefore hashes everything under it, tooling directories included.
+
 ## 7-Zip is optional
 
 Some formats are delegated to an external 7-Zip binary (`7z`, `7zz`, `7za` on
@@ -227,6 +326,16 @@ strictly local. There is no telemetry, no update check, and no index lookup.
    a stable cause **code**; its English text is derived from that code by one
    table, in `unboxr.report`, and never written a second time.
 
+### The extraction document is not a fifth guarantee
+
+`unboxr --sbom` produces the same bytes for the same tree, the serial number
+and the timestamp aside -- which the document names itself, in a field of its
+own. That is an **observation**, and it is deliberately not a fifth guarantee:
+the document carries what *this* machine can open, so one archive yields two
+different documents on two machines whose 7-Zip availability differs.
+Promising byte-identity would make this contract false the first time that
+happened. Compare two documents on one machine, under one version of `unboxr`.
+
 ### What the contract does not guarantee
 
 - **No symbolic-link containment** in flattening. Links inside an extracted tree
@@ -238,10 +347,11 @@ strictly local. There is no telemetry, no update check, and no index lookup.
 - **No guarantee that the tree matches what earlier versions produced**: the tar
   security filter refuses archives they extracted. In exchange, the behaviour is
   now stable from one Python release to the next.
-- **No guarantee on what the report says about content.** It names containers
-  and what became of them; it hashes nothing, opens nothing to look inside, and
-  *an absent entry establishes nothing* -- the oracle is positive only, here as
-  everywhere else.
+- **No guarantee on what the report says about content.** It names containers,
+  what became of them, and the SHA-256 digest of each one that could still be
+  read when it was filed. It opens nothing to look inside, it says nothing
+  about what any of it *means*, and *an absent entry establishes nothing* --
+  the oracle is positive only, here as everywhere else.
 - **No guarantee that the provisional extraction name stays provisional.** It is
   normally transitory -- the directory is renamed as soon as the archive is gone
   -- but it becomes the *definitive* name of that directory whenever the rename

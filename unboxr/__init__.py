@@ -21,11 +21,13 @@ from __future__ import annotations
 import logging
 
 from . import report
+from . import sbom
 from .extraction import (
     ARCHIVE_SIGNATURES,
     CATEGORIES_NEEDING_SEVEN_ZIP,
     CATEGORY_BY_EXT,
     CATEGORY_IF_NOT_A_TAR,
+    EXTRACTED_TREE_NAME,
     NATIVE_TAR_MODES,
     NATURE_BY_EXTENSION,
     NOT_EXTRACTED_EXTENSIONS,
@@ -57,8 +59,17 @@ from .report import (
     CAUSE_TEXTS,
     ContainerRecord,
     ExtractionReport,
+    ORACLE_REMINDER_SENTENCE,
+    PATH_FRAMES,
     PreparedSource,
     text_for,
+)
+from .sbom import (
+    DIGEST_STATES,
+    PROPERTY_NAMES,
+    build_document,
+    serialise,
+    write_document,
 )
 
 # THE single source of truth for the version. `pyproject.toml` reads it from
@@ -72,7 +83,12 @@ from .report import (
 # the reason the change lands on a major version rather than being slipped into
 # a minor one. It declares NOTHING about publication: no hosting is available,
 # and no consumer is wired to this package yet.
-__version__ = "1.0.0"
+# 1.1.0: the extraction document. `unboxr.sbom` projects the report and the
+# tree onto a CycloneDX inventory, every record gained a digest and the frame
+# of its path, and the command gained one option to write it. ALL ADDITIONS --
+# nothing that existed changed shape, every new parameter defaults to what the
+# previous behaviour was -- so a MINOR version, never a break.
+__version__ = "1.1.0"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
@@ -84,16 +100,26 @@ __all__ = [
     "CAUSE_TEXTS",
     "ContainerRecord",
     "ExtractionReport",
+    "ORACLE_REMINDER_SENTENCE",
+    "PATH_FRAMES",
     "PreparedSource",
     "new_report",
     "probe_capability_profile",
     "text_for",
     "UnsupportedFormatError",
+    # The document: the corpus as a record that outlives the run
+    "sbom",
+    "DIGEST_STATES",
+    "PROPERTY_NAMES",
+    "build_document",
+    "serialise",
+    "write_document",
     # Tables
     "ARCHIVE_SIGNATURES",
     "CATEGORIES_NEEDING_SEVEN_ZIP",
     "CATEGORY_BY_EXT",
     "CATEGORY_IF_NOT_A_TAR",
+    "EXTRACTED_TREE_NAME",
     "NATIVE_TAR_MODES",
     "NATURE_BY_EXTENSION",
     "NOT_EXTRACTED_EXTENSIONS",

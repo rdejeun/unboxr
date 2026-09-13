@@ -45,7 +45,7 @@ import unboxr.extraction as ux  # noqa: E402
 
 PROVISIONAL_NAME_SHAPE = re.compile(r"^archive_[0-9a-f]{16}$")
 
-# The seven things the contract explicitly does NOT guarantee. Each entry is a
+# The eight things the contract explicitly does NOT guarantee. Each entry is a
 # fragment that must appear in the written contract. They are held here because
 # a non-guarantee that quietly disappears from the documentation turns into an
 # implied promise -- the exact opposite of what it was written for.
@@ -63,6 +63,12 @@ DECLARED_NON_GUARANTEES = (
     # containers, it says nothing about what is inside them, and an absent entry
     # is not evidence of anything.
     "AN ABSENT ENTRY ESTABLISHES NOTHING",
+    # Added 13 September 2026 with the extraction document. The contract used
+    # to say the report "hashes nothing", which the document made FALSE -- and
+    # NOTHING held that sentence: no test named it, so rewriting it was a
+    # matter of remembering to. The clause that stays TRUE is held here
+    # instead, so the next rewrite goes red rather than silent.
+    "opens nothing to look inside",
 )
 
 
@@ -329,8 +335,8 @@ class TestTheWrittenContract(unittest.TestCase):
         cls.docstring = _flatten(ux.__doc__ or "")
         cls.readme = _flatten((REPO_ROOT / "README.md").read_text(encoding="utf-8"))
 
-    def test_the_seven_non_guarantees_are_written_in_the_module(self):
-        self.assertEqual(7, len(DECLARED_NON_GUARANTEES),
+    def test_the_eight_non_guarantees_are_written_in_the_module(self):
+        self.assertEqual(8, len(DECLARED_NON_GUARANTEES),
                          "the count is part of what this file asserts: update "
                          "the name of this test and the docstring above with it")
         for fragment in DECLARED_NON_GUARANTEES:
@@ -392,6 +398,48 @@ class TestTheWrittenContract(unittest.TestCase):
         reminder = "absence of a finding is never evidence of absence"
         self.assertIn(reminder, self.docstring)
         self.assertIn(reminder, self.readme)
+
+    def test_the_document_is_declared_not_to_be_a_fifth_guarantee(self):
+        """A DECISION, written rather than left to be inferred.
+
+        The extraction document is stable for the same tree, and that stability
+        is NOT promised: it carries what this machine can open, so two machines
+        differing in 7-Zip availability produce two different documents from one
+        archive. A reader who observed the stability and found the contract
+        silent would conclude a promise that is not there -- which is why the
+        negative decision is written in both texts, exactly like a positive one
+        would be.
+        """
+        for claim in ("not a fifth guarantee",
+                      "promising byte-identity would make this contract false"):
+            with self.subTest(claim=claim):
+                self.assertIn(claim, self.docstring.lower())
+                self.assertIn(claim, self.readme.lower())
+
+    def test_the_property_table_of_the_document_lives_in_the_readme(self):
+        """IN BOTH DIRECTIONS. The data contract of the extraction document has
+        to be readable by someone who has this package and nothing else: a
+        table that lived only in the backlog of a consumer would be prose
+        nothing holds, in a repository its readers do not have.
+
+        The count is asserted in this BODY and COMPUTED from the code, never
+        engraved in the name of this test and never copied into it.
+        """
+        import unboxr.sbom as sbom_module
+        in_code = set(sbom_module.PROPERTY_NAMES)
+        in_readme = set(re.findall(r"unboxr:[A-Za-z]+", self.readme))
+        self.assertEqual(set(), in_code - in_readme,
+                         "a property the code emits is missing from README.md")
+        self.assertEqual(set(), in_readme - in_code,
+                         "README.md names a property the code does not emit")
+        self.assertEqual(len(in_code), len(sbom_module.PROPERTY_NAMES))
+
+    def test_adding_a_property_is_declared_to_raise_the_minor_version(self):
+        """Every property of this document is emitted systematically, so adding
+        one is an addition to the published contract and every consumer sees
+        it. The rule is written ONCE, where the table itself lives."""
+        self.assertIn("adding a property to the document is an addition to the "
+                      "contract", self.readme.lower())
 
     def test_the_contract_names_no_upstream_requirement_number(self):
         """The guarantees are unboxr's own; they are not stated by reference to

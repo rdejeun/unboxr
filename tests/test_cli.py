@@ -103,7 +103,11 @@ class TestEntryPointAndSurface(_CommandBench):
         code, out, _ = self._run(["--help"])
         self.assertEqual(0, code)
         listed = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", out))
-        self.assertEqual({"--verbose", "--quiet", "--version", "--help"}, listed)
+        # `--sbom` is the one option the extraction-document story adds, and
+        # the surface is asserted as a COMPLETE set precisely so that a second
+        # one cannot slip in unnoticed.
+        self.assertEqual({"--verbose", "--quiet", "--sbom", "--version",
+                          "--help"}, listed)
         short = set(re.findall(r"(?<![\w-])-[a-z](?![\w-])", out))
         self.assertEqual({"-v", "-q", "-h"}, short)
 
@@ -130,17 +134,26 @@ class TestEntryPointAndSurface(_CommandBench):
         """Declared, so that later work adds to a STATED floor rather than
         discovering one.
 
-        The docstring used to forbid, literally, what this story then did:
-        "do not design their options here". The command was always meant to be
-        enriched here and again by the document story; what it must keep saying
-        is which floor it is now standing on, and what is still not its job.
+        The docstring used to forbid, literally, what the report story then
+        did: "do not design their options here". The command was always meant
+        to be enriched by that story and again by the document one; what it
+        must keep saying is which floor it is now standing on, and what is
+        still not its job.
+
+        AND THE CLAIM THAT HAD TO GO. "It writes no document" was true until
+        the document story, and this assertion is what made its removal
+        impossible to forget -- the whole point of holding published prose in
+        a test. It is replaced here by the claim that is now true, which is
+        narrower: a document is written ON REQUEST, and never otherwise.
         """
         # Whitespace-normalised: the docstring is wrapped prose, and a
         # sentence can straddle a line break.
         flat = re.sub(r"\s+", " ", cli.__doc__.lower())
         self.assertIn("floor", flat)
         self.assertIn("summarises what could not be opened", flat)
-        self.assertIn("writes no document", flat)
+        self.assertNotIn("writes no document", flat)
+        self.assertIn("on request -- and only on request", flat)
+        self.assertIn("what is still not this floor", flat)
         self.assertNotIn("do not design their options here", flat)
 
 

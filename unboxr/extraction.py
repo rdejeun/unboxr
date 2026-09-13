@@ -71,6 +71,20 @@ the consumer.
    a stable cause CODE; its English text is derived from that code by one
    table, in `unboxr.report`, and never written a second time.
 
+THE EXTRACTION DOCUMENT IS NOT A FIFTH GUARANTEE
+-----------------------------------------------
+`unboxr.sbom` produces the same bytes for the same tree, the serial number and
+the timestamp aside -- which the document names itself, in a field of its own.
+That is an OBSERVATION, and it is deliberately NOT added to the four
+guarantees above. The document carries what THIS machine can open, so one
+archive yields two different documents on two machines whose 7-Zip
+availability differs, legitimately and by design; promising byte-identity would
+make this contract false the first time that happened. Comparing two documents
+is something to do on one machine, under one version of this package.
+
+Saying so is not pedantry: a reader who observed the stability and found the
+contract silent would conclude a promise that is not there.
+
 WHAT THE CONTRACT DOES NOT GUARANTEE
 ------------------------------------
 - No symbolic-link containment in flattening. Links inside an extracted tree
@@ -88,8 +102,10 @@ WHAT THE CONTRACT DOES NOT GUARANTEE
   earlier versions extracted. In exchange the behaviour is now stable from one
   Python release to the next -- the filter being requested explicitly, the
   change of default in Python 3.14 has no effect here.
-- No guarantee on what the report says about CONTENT. It names containers and
-  what became of them; it hashes nothing, opens nothing to look inside, and AN
+- No guarantee on what the report says about CONTENT. It names containers,
+  what became of them, and -- since the extraction document -- the SHA-256
+  digest of each one that could still be read when it was filed. It opens
+  nothing to look inside, it says nothing about what any of it MEANS, and AN
   ABSENT ENTRY ESTABLISHES NOTHING -- the oracle is positive only, here as
   everywhere else in this package.
 - No guarantee that the provisional extraction name stays provisional. It is
@@ -142,6 +158,9 @@ from .report import (
     NESTED_CONTAINER_OPENED,
     OFFICE_CONTAINER_EXCLUDED,
     PreparedSource,
+    PATH_FRAME_UNKNOWN,
+    PATH_IS_BARE_NAME,
+    PATH_IS_TREE_RELATIVE,
     PROVISIONAL_DIRECTORY_ALREADY_OCCUPIED,
     RECOGNISED_BY_CONTENT,
     SEVEN_ZIP_BINARY_MISSING,
@@ -191,31 +210,106 @@ class UnsupportedFormatError(RuntimeError):
 # It is not a silent fallback in the sense this project forbids elsewhere. There
 # is no alternative result being chosen here and no conclusion being drawn --
 # only a note that could not be taken.
-def _reportable_path(path, root=None) -> str:
-    """The path a record carries: POSIX and RELATIVE, or the bare file name.
+def _reportable_path_and_frame(path, root=None):
+    """The path a record carries, AND what that path is relative to.
+
+    ONE predicate, one home. The frame is only knowable HERE -- this is the
+    function that either succeeded in making the path relative to a root or
+    fell back on the bare name -- and it used to be dropped on the way out.
+    Recovering it afterwards from the cause code is not possible and must not
+    be attempted: four call sites pass `location or <path>`, so one code yields
+    a relative path in one run and a bare name in another. A second predicate
+    written elsewhere is the duplicated predicate this project has already been
+    told off for once.
 
     NEVER an absolute path. It would depend on the machine, and reopen the
     first of the two inter-platform divergences guarantee 3 of the determinism
     contract exists to close.
     """
     if isinstance(path, str):
-        return path
+        # Already computed by the caller, against something this package cannot
+        # see. UNKNOWN, which excludes nothing downstream -- never guessed to be
+        # relative because it happens to contain a slash.
+        return path, PATH_FRAME_UNKNOWN
     path = Path(path)
     if root is not None:
         try:
-            return path.relative_to(root).as_posix()
+            return path.relative_to(root).as_posix(), PATH_IS_TREE_RELATIVE
         except ValueError:
             pass
-    return path.name
+    return path.name, PATH_IS_BARE_NAME
 
 
-def _record(report, code: str, path, root=None, level=None, detail: str = "") -> None:
-    """File one container under one cause, or do nothing at all."""
+def _reportable_path(path, root=None) -> str:
+    """The path alone. Used as a sort key and as a `location`: both want a
+    string, and neither has anything to do with the frame."""
+    return _reportable_path_and_frame(path, root)[0]
+
+
+def _digest_of_existing_file(path) -> str | None:
+    """The digest of a file that is still there, or `None` -- never a raise.
+
+    THE THREE STATES ARE NOT INTERCHANGEABLE and none of them is an error: a
+    path that names a directory, one whose file has already been removed, and
+    one whose bytes could not be read all yield `None` here, and the record is
+    filed all the same. What must never happen is the opposite -- a digest
+    failing and taking the record, or the rest of the flattening, with it. That
+    is why nothing escapes: a note that could not be taken, never a failure.
+
+    Hashing itself goes through `_sha256_digest_of_file` and nowhere else: a
+    second implementation of the same digest is exactly the duplication this
+    project has already paid for.
+    """
+    if path is None:
+        return None
+    try:
+        candidate = Path(path)
+        if not candidate.is_file():
+            return None
+        return _sha256_digest_of_file(candidate)
+    except Exception:
+        return None
+
+
+def _record(report, code: str, path, root=None, level=None, detail: str = "",
+            *, digest: str | None = None, digest_of=None) -> None:
+    """File one container under one cause, or do nothing at all.
+
+    TWO WAYS TO GIVE A DIGEST, and they are not the same gesture. `digest_of`
+    names a file to hash HERE, in the window where it still exists; `digest`
+    hands over one already taken, which the first-level container does because
+    `prepare_source` hashed the received input before extracting it and reading
+    those bytes a second time would buy nothing.
+
+    NEITHER CAN FAIL THE RECORD. The computation happens outside the `try`
+    below and swallows its own failures, so a digest that cannot be taken
+    leaves the field at `None` and the container is still filed. A record lost
+    because its digest could not be read would be the guard amputating the
+    corpus.
+
+    THE HASH IS SKIPPED WHEN IT WOULD BE THROWN AWAY. `report.record()`
+    dedupes on `(code, path)`, first filing wins -- but that check used to run
+    AFTER the hash, so a file re-examined at every flattening level (an office
+    container left in place, a residual archive) paid for a full read each
+    time even though only the first filing was ever kept. `already_recorded`
+    runs the SAME test before spending the I/O. The pre-check is best-effort:
+    if it cannot even be attempted, the hash still runs -- exactly today's
+    behaviour, never a new way to lose a digest.
+    """
     if report is None:
         return
+    if digest is None and digest_of is not None:
+        try:
+            skip = report.already_recorded(
+                code, _reportable_path_and_frame(path, root)[0])
+        except Exception:
+            skip = False
+        if not skip:
+            digest = _digest_of_existing_file(digest_of)
     try:
-        report.record(code, _reportable_path(path, root), level=level,
-                      detail=detail)
+        text_path, frame = _reportable_path_and_frame(path, root)
+        report.record(code, text_path, level=level, detail=detail,
+                      digest=digest, path_frame=frame)
     except Exception:       # see the section comment above `_reportable_path`
         # RECONSIDERED in code review, story 14.3: narrowing this to `KeyError`
         # (the one documented case, an undeclared code) looked like a genuine
@@ -523,7 +617,10 @@ def categorize_archive(path: Path, *, report=None, root=None, level=None):
     if any(name.endswith(ext) for ext in NOT_EXTRACTED_EXTENSIONS):
         logger.info("%s: office container, excluded from extraction -- its "
                     "content is not the material this tool opens.", path.name)
-        _record(report, OFFICE_CONTAINER_EXCLUDED, path, root, level)
+        # Still on disk: an office container is set aside, never opened,
+        # so nothing has removed it.
+        _record(report, OFFICE_CONTAINER_EXCLUDED, path, root, level,
+                digest_of=path)
         return None, None
 
     # (2) Extension.
@@ -538,7 +635,10 @@ def categorize_archive(path: Path, *, report=None, root=None, level=None):
     if category is not None:
         logger.info("%s: archive recognised by its CONTENT (%s) -- extension "
                     "absent or misleading.", path.name, category)
-        _record(report, RECOGNISED_BY_CONTENT, path, root, level)
+        # Still on disk: recognition reads the first bytes, it extracts
+        # nothing.
+        _record(report, RECOGNISED_BY_CONTENT, path, root, level,
+                digest_of=path)
     return category, ext
 
 
@@ -703,9 +803,17 @@ def _extract_tar_with_checks(tar_path: Path, dest: Path, mode: str = "r:*",
                                 "of a different origin; it is discarded, not "
                                 "merged, to make room for this extraction.",
                                 tar_path, target)
+                            # THE RECORDED PATH IS THE TAR ARCHIVE, not the
+                            # directory being discarded -- `location` is the
+                            # tar's own reportable path. So there IS a file to
+                            # hash, and it is `tar_path`, which the extraction
+                            # above has not removed. Measured 13 September
+                            # 2026: the story that asked for this read the
+                            # recorded path as the directory.
                             _record(report,
                                     DIRECTORY_OF_A_DIFFERENT_ORIGIN_DISCARDED,
-                                    location or tar_path)
+                                    location or tar_path,
+                                    digest_of=tar_path)
                         shutil.rmtree(target)
                     elif target.exists() or target.is_symlink():
                         target.unlink()
@@ -734,8 +842,12 @@ def _extract_tar_with_checks(tar_path: Path, dest: Path, mode: str = "r:*",
                                "INCOMPLETE extraction: no conclusion can be "
                                "drawn from the absence of a finding on its "
                                "content.", tar_path, dest)
+                # FILED TWICE -- here and again in the caller, off the
+                # tagged exception. The first filing wins, so the digest has to
+                # be taken here or it is dropped in silence.
                 _record(report, TAR_CONTENT_PARTLY_MOVED,
-                        location or tar_path, detail=str(exc))
+                        location or tar_path, detail=str(exc),
+                        digest_of=tar_path)
                 exc.code = TAR_CONTENT_PARTLY_MOVED
             elif isinstance(exc, tarfile.FilterError):
                 # The filter refuses the ARCHIVE, not the member: nothing of it
@@ -744,8 +856,11 @@ def _extract_tar_with_checks(tar_path: Path, dest: Path, mode: str = "r:*",
                 # container as many times as the archive has entries -- the
                 # report deduplicates, but the cause belongs where the archive
                 # is known, not where a member is.
+                # Filed twice, like the branch above: the digest belongs to
+                # the first filing.
                 _record(report, TAR_REFUSED_BY_SECURITY_FILTER,
-                        location or tar_path, detail=str(exc))
+                        location or tar_path, detail=str(exc),
+                        digest_of=tar_path)
                 exc.code = TAR_REFUSED_BY_SECURITY_FILTER
             raise
         finally:
@@ -804,7 +919,10 @@ def _provisional_extraction_name(archive: Path, root: Path, *, report=None,
         # never actually reached -- the code was declared in `report.py` and
         # never recorded anywhere. `root=None`: `_reportable_path` cannot make
         # this path relative to a root it just fell outside of.
-        _record(report, ARCHIVE_OUTSIDE_THE_ANALYSED_ROOT, archive, None, level)
+        # `root=None` above: the path is a BARE NAME, and the frame now
+        # says so. The file itself is there -- this branch only names it.
+        _record(report, ARCHIVE_OUTSIDE_THE_ANALYSED_ROOT, archive, None, level,
+                digest_of=archive)
         relative = archive.as_posix()
     digest = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:PROVISIONAL_DIGEST_LENGTH]
     return f"archive_{digest}"
@@ -964,8 +1082,11 @@ def extract_tar_7z(path: Path, dest: Path, *, report=None,
                            "conclusion can be drawn from the absence of a finding on "
                            "those archives.", len(found_tars),
                            found_tars[0].relative_to(tmp_dir).as_posix(), others)
+            # The recorded path names the .7z ENVELOPE, which is `path` and
+            # is still on disk; the tars left out are inside it.
             _record(report, SEVERAL_TARS_ONLY_FIRST_EXTRACTED,
-                    location or path.name, detail=others)
+                    location or path.name, detail=others,
+                    digest_of=path)
         _extract_tar_with_checks(found_tars[0], dest, mode="r:", report=report,
                                  location=location or path.name)
     finally:
@@ -1174,8 +1295,9 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
                                "already holds content, left by an earlier run "
                                "over this workspace; the two are mixed there, "
                                "with no further warning.", archive, provisional_dest)
+                # Before extraction: the archive is still a file.
                 _record(report, PROVISIONAL_DIRECTORY_ALREADY_OCCUPIED,
-                        archive, root, level)
+                        archive, root, level, digest_of=archive)
             try:
                 extract_archive(archive, provisional_dest, report=report,
                                 location=_reportable_path(archive, root))
@@ -1187,12 +1309,22 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
                 # on the generic failure for anything that does not carry one:
                 # a corrupt archive stays a FAILURE. Guessing a refusal there
                 # would have the report say this tool does not open zip files.
+                # A failed extraction never removes its source: the archive
+                # is still there, and hashing it is what lets a reader tell one
+                # unreadable container from another.
                 _record(report, getattr(exc, "code", EXTRACTION_FAILED),
-                        archive, root, level, detail=str(exc))
+                        archive, root, level, detail=str(exc),
+                        digest_of=archive)
                 attempted_archives.add(archive)
                 amputated_archives.add(archive)
                 continue
-            _record(report, NESTED_CONTAINER_OPENED, archive, root, level)
+            # THE WINDOW. This runs AFTER a successful extraction and
+            # BEFORE `archive.unlink()` below: the container still exists, and
+            # this is the only instant in the whole run at which it does. A
+            # walk of the finished tree cannot produce this digest, because by
+            # then the file is gone.
+            _record(report, NESTED_CONTAINER_OPENED, archive, root, level,
+                    digest_of=archive)
             try:
                 archive.unlink()  # drop the archive once flattened in place
             except FileNotFoundError:
@@ -1226,8 +1358,11 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
                                "content stays under the provisional name %s. "
                                "Its content IS in the extracted tree.",
                                archive, exc, provisional_dest)
+                # The archive could NOT be removed: it is still on disk,
+                # which is the whole point of this branch.
                 _record(report, ARCHIVE_KEPT_AFTER_SUCCESSFUL_EXTRACTION,
-                        archive, root, level, detail=str(exc))
+                        archive, root, level, detail=str(exc),
+                        digest_of=archive)
                 attempted_archives.add(archive)
                 continue
             try:
@@ -1254,6 +1389,10 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
                                "%s. Its content IS in the extracted tree, under "
                                "that name.", archive, final_dest, exc,
                                provisional_dest)
+                # NO DIGEST, and not for want of trying: `archive.unlink()`
+                # above SUCCEEDED -- that is how control reaches the rename --
+                # so the file is gone. `None` says "not computed here", which
+                # is the truth.
                 _record(report, EXTRACTION_KEPT_UNDER_PROVISIONAL_NAME,
                         archive, root, level, detail=str(exc))
 
@@ -1300,7 +1439,11 @@ def _record_residual_archives(report, root: Path, attempted: set) -> None:
             # reporting the bound in its place read as the archive's own
             # nesting depth, which it is not. Verified in code review, story
             # 14.3: was `max_depth` unconditionally, on every residual entry.
-            _record(report, MAXIMUM_DEPTH_REACHED, archive, root, None)
+            # Residual archives are on disk at this instant -- that is what
+            # being still unopened means -- so reading them here is still
+            # recording DURING the extraction.
+            _record(report, MAXIMUM_DEPTH_REACHED, archive, root, None,
+                    digest_of=archive)
     except Exception:       # a note that could not be taken, never a failure
         pass
 
@@ -1384,6 +1527,14 @@ def resolve_distribution_nature(file_name: str, matched_extension: str | None) -
 # whose comment carries the measurement that justifies it. It is NOT re-justified
 # here: no fresh measurement was made for this move, and inventing a motive would
 # pass a reuse off as a decision.
+# The one name the extracted tree is created under, beneath the workspace.
+# A CONSTANT rather than a literal repeated wherever the tree has to be named:
+# the command needs it to refuse an output path that would fall inside the tree
+# it is about to inventory, and a second spelling of the same segment drifts
+# from this one the first time either moves. Same reason `_QuietFilter` reads
+# its format strings from `unboxr.report` rather than keeping a copy.
+EXTRACTED_TREE_NAME = "extracted"
+
 _HASHING_BLOCK_SIZE = 1 << 20
 
 
@@ -1498,7 +1649,7 @@ def prepare_source(source: str, workspace: Path | None = None,
     hash.
 
     `workspace` is the directory the archive is unpacked under; the tree returned
-    is `workspace / "extracted"`. When it is not given, a temporary directory is
+    is `workspace / EXTRACTED_TREE_NAME`. When it is not given, a temporary directory is
     created and NEVER removed -- the caller owns it. A caller that runs
     repeatedly should pass a workspace it manages itself.
 
@@ -1586,7 +1737,7 @@ def prepare_source(source: str, workspace: Path | None = None,
     digest_hex = _sha256_digest_of_file(local_path)
     logger.info("SHA-256 digest of the input: sha256:%s", digest_hex)
 
-    destination = workspace / "extracted"
+    destination = workspace / EXTRACTED_TREE_NAME
     # The same collision guard `flatten_nested_archives` applies to its nested
     # destinations, applied to the FIRST-level one. Without it the guard existed
     # only below the top: a caller that reuses a workspace -- the case this
@@ -1602,6 +1753,9 @@ def prepare_source(source: str, workspace: Path | None = None,
             logger.warning("Destination %s already holds content; extracting "
                            "into it merges the two, with no further warning.",
                            destination)
+            # NO DIGEST: `destination` is a DIRECTORY. Condensing a tree
+            # walk into a value that reads like a file digest would attest
+            # something else entirely.
             _record(report, DESTINATION_ALREADY_OCCUPIED, destination, level=0)
     logger.info("Extracting archive: %s", local_path)
     # THE FIRST-LEVEL CONTAINER IS EXTRACTED OUTSIDE THE FLATTENING LOOP, so
@@ -1612,10 +1766,14 @@ def prepare_source(source: str, workspace: Path | None = None,
         extract_archive(local_path, destination, report=report,
                         location=local_path.name)
     except Exception as exc:
+        # REUSED, never recomputed: `digest_hex` was taken a few lines above
+        # on these very bytes, at the one point both origins converge.
         _record(report, getattr(exc, "code", EXTRACTION_FAILED), local_path,
-                level=0, detail=str(exc))
+                level=0, detail=str(exc), digest=digest_hex)
         raise
-    _record(report, INPUT_CONTAINER_OPENED, local_path, level=0)
+    # Reused as well: same file, same bytes, digest already in hand.
+    _record(report, INPUT_CONTAINER_OPENED, local_path, level=0,
+            digest=digest_hex)
     logger.info("Looking for nested archives (recursive flattening)...")
     flatten_nested_archives(destination, report=report)
     return PreparedSource(tree=destination, nature=nature, digest=digest_hex,

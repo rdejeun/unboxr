@@ -135,7 +135,14 @@ class TestDependencyBoundary(unittest.TestCase):
         assertion is what says so out loud.
         """
         names = {path.name for path in _package_files()}
-        self.assertEqual({"__init__.py", "cli.py", "extraction.py", "report.py"},
+        # `sbom.py` joined the package with the extraction document. It was
+        # brought under every guard in this file by that one addition, which is
+        # the whole point of deriving the set from the disk: the forbidden
+        # tokens, the third-party import ban, the pure-ASCII rule and the
+        # absence of any provisional-arbitration dependency all apply to it
+        # without a line being written for it.
+        self.assertEqual({"__init__.py", "cli.py", "extraction.py", "report.py",
+                          "sbom.py"},
                          names)
 
     def test_no_third_party_import_anywhere_in_the_package(self):
@@ -254,7 +261,10 @@ class TestPackagingBoundary(unittest.TestCase):
         self.assertIn("version", self.pyproject["project"]["dynamic"])
         self.assertEqual({"attr": "unboxr.__version__"},
                          self.pyproject["tool"]["setuptools"]["dynamic"]["version"])
-        self.assertEqual("1.0.0", unboxr.__version__)
+        # ENGRAVED ON PURPOSE, and the one guard in this file that the
+        # version -- not the package surface -- makes go red. 1.1.0 is the
+        # extraction document: additions only, so a minor version.
+        self.assertEqual("1.1.0", unboxr.__version__)
         source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("importlib.metadata", source)
 

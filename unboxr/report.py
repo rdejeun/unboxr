@@ -326,6 +326,28 @@ CORPUS_WIDENING_MESSAGE = (
 )
 
 
+# THE positive-only oracle reminder, as ONE sentence and in ONE place.
+#
+# It lived in two forms until now: prose inside the docstrings of
+# `unboxr.extraction` and of the README (asserted against each other by a test),
+# and a LOGGING FORMAT STRING in `unboxr.cli` beginning with `%s`. Neither could
+# be reused by anything that writes a document -- a format string is not a
+# sentence, and a docstring is not an API.
+#
+# It sits HERE rather than in `unboxr.cli` because of the import direction:
+# `cli` imports `extraction`, which imports this module, so a document builder
+# reading the sentence off `cli` would close the cycle that stranded these
+# tables in `cli.py` in the first place. `cli.ORACLE_REMINDER` now COMPOSES its
+# format string on top of this constant instead of repeating it.
+#
+# The wording does not move with it: two tests hold this exact sentence, in the
+# module docstring of `unboxr.extraction` and in the README.
+ORACLE_REMINDER_SENTENCE = (
+    "What could not be opened cannot be reported on: absence of a finding is "
+    "never evidence of absence."
+)
+
+
 def text_for(code: str) -> str:
     """The English text of a cause code.
 
@@ -372,6 +394,32 @@ class CapabilityProfile:
         return self.seven_zip_binary is not None
 
 
+# --- The frame a recorded path was computed in --------------------------------
+#
+# THREE STATES, and the middle one is why they exist at all. `path` above is a
+# path relative to the analysed root wherever the chain knew that root, and the
+# bare file NAME otherwise -- and NOTHING in a finished report told the two
+# apart. The cause code cannot be used to recover it: four call sites of
+# `unboxr.extraction` pass `location or <path>`, so the SAME code yields a
+# relative path when a location was threaded through and a bare name when it
+# was not.
+#
+# A consumer that joins a bare name to the root gets a path to a file that is
+# not there; one that compares it to a walk of the tree can COLLIDE with a real
+# file of the same name and drop it. So the frame is MARKED where it is still
+# known -- on the way out of `_reportable_path_and_frame` -- and read later,
+# never guessed from a list of codes copied somewhere else.
+#
+# UNKNOWN leans the safe way: it is the frame of a path a caller handed over
+# already computed as a string, and it excludes nothing from anything. Doubt
+# INSCRIBES; it never removes.
+PATH_IS_TREE_RELATIVE = "tree_relative"
+PATH_IS_BARE_NAME = "bare_name"
+PATH_FRAME_UNKNOWN = "frame_unknown"
+
+PATH_FRAMES = (PATH_IS_TREE_RELATIVE, PATH_IS_BARE_NAME, PATH_FRAME_UNKNOWN)
+
+
 @dataclass(frozen=True)
 class ContainerRecord:
     """One container, one cause. `path` is a POSIX relative path wherever the
@@ -382,12 +430,25 @@ class ContainerRecord:
     `level` is the flattening level the container was met at: 0 for the one the
     caller handed over, 1 and up for a nested one, `None` where the chain has no
     level to give.
+
+    `digest` is the BARE hexadecimal SHA-256 of the container, taken at the
+    moment the record was filed, or `None`. Three states, never two: `None`
+    means "not computed here", which covers a path that names a directory, one
+    whose file was already gone, and one whose bytes could not be read. It does
+    NOT mean the container had no content. A container that is OPENED is
+    destroyed by the flattening, so the instant it is recorded is the only one
+    in which it can be hashed at all -- which is why the field lives here and
+    not in whatever walks the finished tree.
+
+    `path_frame` says what `path` is relative to. See PATH_FRAMES above.
     """
 
     code: str
     path: str
     level: int | None = None
     detail: str = ""
+    digest: str | None = None
+    path_frame: str = PATH_FRAME_UNKNOWN
 
 
 @dataclass
@@ -418,13 +479,21 @@ class ExtractionReport:
         WIDENED: "widened",
     }
 
-    def record(self, code: str, path, level=None, detail: str = "") -> None:
+    def record(self, code: str, path, level=None, detail: str = "",
+               digest: str | None = None,
+               path_frame: str = PATH_FRAME_UNKNOWN) -> None:
         """File one container under one cause.
 
         The identity of an entry is the pair (code, path): recording the same
         pair again changes nothing. That is what makes this a report and not a
         log -- `categorize_archive` is reached from four call sites, one inside
         a comprehension re-evaluated at every level.
+
+        THE FIRST FILING WINS, AND THAT DECIDES WHERE A DIGEST HAS TO BE TAKEN.
+        Three causes are filed twice by the chain -- a partly moved tar, a tar
+        refused by the filter, and the code read back off a tagged exception --
+        so a digest handed to the SECOND filing is discarded here in silence.
+        It is taken at the first one, where the container is still known.
 
         An UNDECLARED code raises, and only an undeclared code does. That is a
         programming error, caught on the first run; everything a real run can
@@ -444,7 +513,26 @@ class ExtractionReport:
             if existing.code == code and existing.path == text_path:
                 return
         target.append(ContainerRecord(code=code, path=text_path, level=level,
-                                      detail="" if detail is None else str(detail)))
+                                      detail="" if detail is None else str(detail),
+                                      digest=digest, path_frame=path_frame))
+
+    def already_recorded(self, code: str, path) -> bool:
+        """Whether `(code, path)` is already filed -- the EXACT test `record()`
+        runs above to decide whether a new entry would even survive.
+
+        Exposed so a caller about to pay for a full-file hash can skip it when
+        the entry it would attach to is going to be discarded as a duplicate
+        anyway (`_record` in `extraction.py`, review of story 14.4: the same
+        office container or residual archive is re-examined at every
+        flattening level, and hashing it again each time bought nothing but a
+        digest `record()` was always going to throw away)."""
+        kind = CAUSE_KINDS[code]           # an undeclared code has no home
+        target_name = self._KIND_FIELDS.get(kind)
+        if target_name is None:            # LOG_ONLY is filed nowhere
+            return False
+        text_path = "" if path is None else str(path)
+        return any(existing.code == code and existing.path == text_path
+                  for existing in getattr(self, target_name))
 
     def amputation_count(self) -> int:
         """How many containers are NOT in the tree the caller gets back.
