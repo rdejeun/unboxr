@@ -169,11 +169,18 @@ NONE_VALUE = "none"
 # The technical caveat this document carries about ITSELF. It is not one of the
 # two scope warnings a verdict-bearing document owes -- this one bears no
 # verdict, and says so. What survives, entire, is the positive-only oracle.
+# THE LAST CLAUSE STATES A RULE OF READING, never the state of this particular
+# document: the warning is emitted on every document, linked or not, so a
+# sentence written as though the reference were always absent would be false
+# half the time. Without it, a reader holding the other document would take
+# the silence to mean the two do not go together.
 DOCUMENT_SCOPE_WARNING = (
     "This document attests the presence and the SHA-256 digest of what it "
     "lists, at the moment the extraction finished. It attests NOTHING about "
     "anything absent from it, and it carries no verdict of any kind -- no "
-    "classification, no score, no conclusion about the content it names."
+    "classification, no score, no conclusion about the content it names. "
+    "The absence of an external reference to another BOM means none was "
+    "supplied, not that this extraction belongs to none."
 )
 
 # The two fields this document does NOT promise from one run to the next. Named
@@ -198,6 +205,109 @@ _PROVISIONAL_NAME = re.compile(r"^archive_[0-9a-f]{%d}$" % PROVISIONAL_DIGEST_LE
 TYPE_FILE = "file"
 TYPE_NOT_A_FILE = "data"
 TYPE_TOOL = "application"
+
+
+# --- The link to another BOM --------------------------------------------------
+#
+# A BOM says which other BOM it belongs to with a BOM-Link: a URN of the shape
+# `urn:cdx:<uuid>/<version>`, where the UUID is the one carried by the other
+# document's serial number -- BARE, with no `urn:uuid:` prefix in front of it --
+# and the version is that document's own.
+#
+# WHAT THE SCHEMA DOES NOT DO, AND IT IS THE REASON THIS CONSTANT EXISTS.
+# `externalReference.url` is an `anyOf` whose first branch is a plain
+# `iri-reference` string, and that branch accepts anything at all. Measured on
+# 13 September 2026 against the official schema: a document whose link reads
+# `anything at all` validates with ZERO errors, and so does one pointing at
+# version 0 of a document that is not a UUID. A validator cannot be asked to
+# hold this; the check below is the only thing that does.
+#
+# TRANSCRIBED, NOT READ AT RUN TIME, and the reason is a fact about this
+# repository rather than a preference: the schema is not vendored here, this
+# package declares no dependency at all, and a test reading a cache that
+# belongs to one machine would make its own result depend on the state of that
+# machine. So the pattern is read at the source, written down WITH ITS
+# PROVENANCE, and re-confronted to the schema at delivery time.
+#
+# Source: `definitions.bomLinkDocumentType.pattern`, CycloneDX schema tag 1.7
+# -- never `master`, which diverges from it -- read on 13 September 2026.
+#
+# THE RAW STRING, with the compiled form derived from it below: a delivery
+# check comparing this constant to the schema character for character cannot
+# do so against a compiled object.
+BOM_LINK_DOCUMENT_PATTERN = (
+    "^urn:cdx:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    "/[1-9][0-9]*$"
+)
+
+# ALREADY ANCHORED at both ends by the schema itself: nothing is added here,
+# and `fullmatch` below is not redundant with it. See the predicate.
+_BOM_LINK_DOCUMENT = re.compile(BOM_LINK_DOCUMENT_PATTERN)
+
+# What the link does NOT attest, in the native `comment` field -- never in a
+# property of this package's own, the rule being that a name the schema
+# already provides does not get invented a second time here.
+#
+# THE POSITIVE-ONLY ORACLE, APPLIED TO THE LINK ITSELF. `unboxr` does not open
+# the document it is pointed at: it cannot know that it exists, and it cannot
+# know that it describes this extraction. Both would be read into a bare link.
+LINKED_BOM_COMMENT = (
+    "The BOM this document belongs to, as supplied by the caller. unboxr "
+    "does not open it and does not resolve it: this reference attests "
+    "neither that the document exists nor that it describes this extraction."
+)
+
+
+class InvalidBomLinkError(ValueError):
+    """A link this package will not write, because it knows it to be false.
+
+    Raised rather than dropped. Silently writing no link would make the
+    attachment the caller asked for disappear, leaving a document
+    indistinguishable from one nobody ever wanted linked.
+    """
+
+
+# ONE explanation, not two independently worded ones. This module's own
+# refusal and the command's option-parsing refusal (`unboxr/cli.py`) used to
+# each spell out the shape and the element-form rationale in their own words,
+# and the two had already drifted -- "a reference of this package renumbers"
+# here against "a reference of the extraction document renumbers" there. The
+# same discipline as `BOM_LINK_DOCUMENT_PATTERN` applies: one source, read
+# from here, never retyped.
+INVALID_BOM_LINK_REASON = (
+    "not a BOM-Link to a document: %r. The shape is "
+    "urn:cdx:<uuid>/<version>, with the uuid in lowercase "
+    "hexadecimal and bare -- no urn:uuid: prefix -- and a version of "
+    "1 or more. A link to an element of a document (...#<bom-ref>) "
+    "is refused: a reference of the document renumbers whenever the "
+    "corpus changes."
+)
+
+
+def is_bom_link_to_a_document(candidate) -> bool:
+    """Whether a value is a BOM-Link of DOCUMENT shape.
+
+    `fullmatch`, NEVER `match`, AND IT IS NOT A MATTER OF STYLE. Python's `$`
+    also matches just before a final newline; the `$` of ECMA-262, which is
+    the semantics a JSON Schema pattern carries, does not. A value ending in a
+    newline -- the ordinary residue of reading a URN out of a file -- would
+    pass a `match` and be written into a document no validator will ever
+    question, this check being its only defence.
+
+    THE ELEMENT SHAPE, `...#<bom-ref>`, IS REFUSED, and that is a decision of
+    this package rather than a constraint of the format, reversible as such.
+    Two reasons, each sufficient: `unboxr` knows no `bom-ref` of the document
+    it points at, and its own references are RANKS that renumber the moment a
+    file enters or leaves the corpus -- so a link into an element would break
+    at the next regeneration, in silence.
+
+    A value that is not a string is refused rather than raising: this answers
+    a question, it does not decide that a caller who handed over the wrong
+    kind of thing has a link.
+    """
+    if not isinstance(candidate, str):
+        return False
+    return _BOM_LINK_DOCUMENT.fullmatch(candidate) is not None
 
 
 def _tool_version() -> str:
@@ -382,7 +492,7 @@ def _depth_values(report, source_kind: str):
 
 def build_document(report, tree=None, *, source=None, source_digest=None,
                    source_kind=SOURCE_UNDETERMINED, serial_number=None,
-                   timestamp=None):
+                   timestamp=None, linked_bom=None):
     """The CycloneDX 1.7 document, as a structure. Nothing is written here.
 
     `tree` is the directory the extraction produced, or `None` when the run
@@ -390,12 +500,26 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
     and the document matters most. `source` names what was handed over,
     `source_digest` is its bare hexadecimal SHA-256 when it had one.
 
+    `linked_bom` is a BOM-Link, RECEIVED ALREADY FORMED. This function does
+    not compose one out of a serial number and a version: how a caller
+    numbers its own documents is not this package's business, and a composer
+    would be a point of extension nobody has asked for. A link it cannot
+    recognise raises `InvalidBomLinkError`; `None` leaves the key out
+    entirely, an empty array being a way of saying "we looked, there is none"
+    that this package does not have.
+
     ONE COMPONENT PER PATH, never one per report entry. The identity of a
     report entry is the pair (cause, path) and one path can carry several
     causes -- a container opened and then kept is the ordinary case. Every code
     is present, in a deterministic order, and the texts follow the same order:
     none is chosen at the expense of another.
     """
+    # BEFORE ANYTHING IS BUILT. A document half-assembled and then thrown away
+    # costs a full walk of the tree for nothing, and the fault is decidable
+    # from the argument alone.
+    if linked_bom is not None and not is_bom_link_to_a_document(linked_bom):
+        raise InvalidBomLinkError(INVALID_BOM_LINK_REASON % (linked_bom,))
+
     entries = {}
     order = []
 
@@ -476,15 +600,16 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
         state = item["state"] or DIGEST_READ_FAILED
         component = {
             # DERIVED FROM THE SORTED RANK, NEVER FROM THE PATH -- a path
-            # would need escaping wherever `bom-ref` is later placed after a
-            # `#` in a BOM-Link URN (14.5). THE CONSEQUENCE, TO BE READ BEFORE
-            # 14.5 links against this: a rank RENUMBERS every time a file
-            # enters or leaves the corpus, so a link built against one
-            # document's `bom-ref` is valid against THAT document only, never
-            # against "the SBOM of this package" in general. Tenable because
-            # the two linked documents are produced together, but silent
-            # otherwise -- a regeneration would break the link without saying
-            # so. See also `README.md`, "The extraction document".
+            # would need escaping wherever a `bom-ref` is placed after a `#`
+            # in a BOM-Link URN. THE CONSEQUENCE, AND WHAT WAS DECIDED ON IT:
+            # a rank RENUMBERS every time a file enters or leaves the corpus,
+            # so a link built against one document's `bom-ref` is valid
+            # against THAT document only, never against "the extraction
+            # document of this package" in general -- and a regeneration would
+            # break it without saying so, no validator seeing anything. That
+            # is why `is_bom_link_to_a_document` refuses the element shape
+            # outright: the only link this package writes points at a
+            # DOCUMENT. See also `README.md`, "The extraction document".
             "bom-ref": "unboxr-component-%d" % rank,
             "type": TYPE_FILE if state != DIGEST_NOT_A_FILE else TYPE_NOT_A_FILE,
             # THE FULL RELATIVE PATH, not the base name: `name` is one of the
@@ -526,7 +651,7 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
     if subject_hashes is not None:
         subject["hashes"] = subject_hashes
 
-    return {
+    document = {
         "bomFormat": "CycloneDX",
         "specVersion": "1.7",
         # NEITHER OF THESE IS DECORATION. A BOM is addressable by a BOM-Link of
@@ -578,6 +703,30 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
         },
         "components": components,
     }
+
+    # AT THE ROOT, AND NOWHERE ELSE. Read from the schema on 13 September
+    # 2026: `externalReferences` exists at the root of a BOM and on a
+    # component, and does NOT exist on `metadata` -- writing it there, which
+    # is where everything else this package adds goes, would make the document
+    # invalid. THREE KEYS AND NO MORE: `externalReference` is
+    # `additionalProperties: false`, admitting `url`, `comment`, `type`,
+    # `hashes` and `properties` and nothing of anyone's own devising. `type`
+    # is `bom`, one of the 47 values of its enumeration, the one the schema
+    # describes as a bill of materials.
+    #
+    # THE KEY IS ABSENT WHEN THERE IS NO LINK, and an empty array is not an
+    # alternative: it would read as "we looked, there is none", a negative
+    # drawn from an absence. The schema accepts an empty array perfectly well
+    # -- measured, zero errors -- so this is a rule of this package, not a
+    # restatement of the format, and relaxing it as redundant would be a
+    # mistake.
+    if linked_bom is not None:
+        document["externalReferences"] = [{
+            "type": "bom",
+            "url": linked_bom,
+            "comment": LINKED_BOM_COMMENT,
+        }]
+    return document
 
 
 def serialise(document) -> str:

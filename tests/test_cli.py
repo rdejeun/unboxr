@@ -103,11 +103,12 @@ class TestEntryPointAndSurface(_CommandBench):
         code, out, _ = self._run(["--help"])
         self.assertEqual(0, code)
         listed = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", out))
-        # `--sbom` is the one option the extraction-document story adds, and
-        # the surface is asserted as a COMPLETE set precisely so that a second
-        # one cannot slip in unnoticed.
-        self.assertEqual({"--verbose", "--quiet", "--sbom", "--version",
-                          "--help"}, listed)
+        # `--sbom` writes the extraction document; `--linked-bom` says which
+        # other BOM that document belongs to, and has no meaning without it.
+        # The surface is asserted as a COMPLETE set precisely so that one more
+        # cannot slip in unnoticed.
+        self.assertEqual({"--verbose", "--quiet", "--sbom", "--linked-bom",
+                          "--version", "--help"}, listed)
         short = set(re.findall(r"(?<![\w-])-[a-z](?![\w-])", out))
         self.assertEqual({"-v", "-q", "-h"}, short)
 
@@ -145,6 +146,16 @@ class TestEntryPointAndSurface(_CommandBench):
         impossible to forget -- the whole point of holding published prose in
         a test. It is replaced here by the claim that is now true, which is
         narrower: a document is written ON REQUEST, and never otherwise.
+
+        AND THE SECOND ONE, FOR A REASON WORTH WRITING DOWN. The heading was
+        asserted and its CONTENTS never were, so the paragraph under it could
+        say the exact opposite of what the command does while this test stayed
+        green. It said that linking that document to another was later work
+        and not designed here -- which is precisely what the linking work then
+        did. A heading held without its contents is more dangerous than prose
+        held by nothing, because it is believed to be held. A fragment of what
+        the paragraph now says is asserted below, and the sentence that became
+        false is asserted GONE.
         """
         # Whitespace-normalised: the docstring is wrapped prose, and a
         # sentence can straddle a line break.
@@ -155,6 +166,15 @@ class TestEntryPointAndSurface(_CommandBench):
         self.assertIn("on request -- and only on request", flat)
         self.assertIn("what is still not this floor", flat)
         self.assertNotIn("do not design their options here", flat)
+        self.assertNotIn("linking that document to another, and every option",
+                         flat)
+        self.assertIn("no self-check gate, no strict mode", flat)
+        # A fragment of what REPLACED the false claim, not merely of what
+        # survived around it -- the previous two assertions above pin
+        # unchanged prose and would stay green even if this sentence were
+        # deleted outright. Precedent: 14.4 added
+        # "on request -- and only on request" for the same reason.
+        self.assertIn("does not fetch, open or resolve", flat)
 
 
 class TestExtractionThroughTheCommand(_CommandBench):

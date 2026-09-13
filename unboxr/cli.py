@@ -1,14 +1,16 @@
 """The `unboxr` command line.
 
-A DELIBERATE FLOOR, and one that has now been added to twice. It opens an
-archive into a destination directory, says where the result is, and summarises
-what could not be opened. On request -- and only on request -- it also writes
-the extraction document: a CycloneDX inventory of the corpus, one file per
-component with its digest, plus every container that was not opened and why.
+A DELIBERATE FLOOR, and one that has now been added to three times. It opens
+an archive into a destination directory, says where the result is, and
+summarises what could not be opened. On request -- and only on request -- it
+also writes the extraction document: a CycloneDX inventory of the corpus, one
+file per component with its digest, plus every container that was not opened
+and why. On request again, that document says which other BOM it belongs to.
 
-WHAT IS STILL NOT THIS FLOOR. Linking that document to another, and every
-option such linking will need, are later work and are not designed here. There
-is no self-check gate, no strict mode, and no verdict of any kind.
+WHAT IS STILL NOT THIS FLOOR. There is no self-check gate, no strict mode, and
+no verdict of any kind. The command does not fetch, open or resolve the BOM it
+is given the URN of, and it does not compose that URN: it is handed one, it
+checks its shape, and it refuses what it cannot recognise.
 
 WHAT CHANGED, AND WHY IT MATTERS MORE THAN IT LOOKS. This command used to learn
 about amputations of the corpus by READING ITS OWN LOGGING RECORDS: a
@@ -125,9 +127,50 @@ def build_parser() -> argparse.ArgumentParser:
              "opened with its cause. Nothing is written without this option.",
     )
     parser.add_argument(
+        "--linked-bom",
+        metavar="URN",
+        help="Record, in the extraction document, which other BOM this one "
+             "belongs to. Takes a BOM-Link URN of the shape "
+             "urn:cdx:<uuid>/<version>. Requires --sbom, and is refused "
+             "without it.",
+    )
+    parser.add_argument(
         "--version", action="version", version=f"unboxr {__version__}",
     )
     return parser
+
+
+def check_linked_bom(parser, linked_bom, document_path) -> None:
+    """Refuse a link that has no object, or no recognisable shape, NOW.
+
+    DECIDED FROM THE ARGUMENTS ALONE, WHICH IS WHY IT COMES FIRST. Nothing
+    here touches the file system: the two faults are readable in `argv` and
+    nothing about the state of the machine can change the answer. A refusal
+    that cannot be pre-empted by an unrelated file-system state is a refusal
+    that always names the reason that actually applies.
+
+    THE DEPENDENCY IS CHECKED BEFORE THE VALUE. An option with no object at
+    all is not examined for the shape of its argument: a caller who forgot
+    `--sbom` would otherwise be sent to fix a URN that was never the problem.
+
+    AND NEITHER FAULT IS IGNORED IN SILENCE. An ignored option makes a caller
+    believe work happened that did not -- here, that an attachment was
+    recorded when no document was written at all.
+    """
+    if linked_bom is None:
+        return
+    if document_path is None:
+        parser.error(
+            "--linked-bom names the BOM the extraction document belongs to, "
+            "and no document is being written: add --sbom FILE, or drop "
+            "--linked-bom")
+    if not sbom.is_bom_link_to_a_document(linked_bom):
+        # Same wording as `InvalidBomLinkError`, read from the one place it is
+        # spelled out (`sbom.INVALID_BOM_LINK_REASON`) rather than retyped
+        # here: two independently worded copies of this explanation had
+        # already drifted apart.
+        parser.error("--linked-bom is "
+                     + sbom.INVALID_BOM_LINK_REASON % (linked_bom,))
 
 
 def _resolved(path: Path):
@@ -304,6 +347,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # FIRST OF ALL THE REFUSALS, because it is the only one decidable without
+    # touching the file system at all. See `check_linked_bom`.
+    check_linked_bom(parser, args.linked_bom, args.sbom)
+
     destination: Path = args.destination
     if destination.exists() and not destination.is_dir():
         parser.error(f"destination is not a directory: {destination}")
@@ -341,8 +388,12 @@ def main(argv: list[str] | None = None) -> int:
         # containers, no file component at all, and an outcome that says so.
         # The return code stays 1: a failure that produced a document is still
         # a failure.
+        # THE LINK IS CARRIED HERE TOO, and this is the branch that most needs
+        # it: a run whose corpus is amputated to nothing is precisely the one
+        # that has to be tied back to the conclusion it fed.
         _write_document(args.sbom, report, None, args.archive, None,
-                        sbom.SOURCE_UNDETERMINED, logger)
+                        sbom.SOURCE_UNDETERMINED, logger,
+                        linked_bom=args.linked_bom)
         return 1
 
     summarise(report, logger)
@@ -355,7 +406,8 @@ def main(argv: list[str] | None = None) -> int:
     source_kind = (sbom.SOURCE_IS_DIRECTORY if prepared.nature == "directory"
                    else sbom.SOURCE_IS_ARCHIVE)
     written = _write_document(args.sbom, report, prepared.tree, args.archive,
-                              prepared.digest, source_kind, logger)
+                              prepared.digest, source_kind, logger,
+                              linked_bom=args.linked_bom)
     # `stdout` carries the tree whatever happened to the document: the
     # extraction is not lost because a write failed.
     print(prepared.tree)
@@ -363,7 +415,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _write_document(document_path, report, tree, source, source_digest,
-                    source_kind, logger: logging.Logger) -> bool:
+                    source_kind, logger: logging.Logger,
+                    linked_bom=None) -> bool:
     """Write the extraction document, or say why it could not be written.
 
     THE RESIDUE OF `check_document_path`, HANDLED RATHER THAN LEFT SILENT. That
@@ -377,7 +430,7 @@ def _write_document(document_path, report, tree, source, source_digest,
     try:
         document = sbom.build_document(
             report, tree, source=source, source_digest=source_digest,
-            source_kind=source_kind)
+            source_kind=source_kind, linked_bom=linked_bom)
         sbom.write_document(document, document_path)
     except Exception as exc:
         logger.error("the extraction document could not be written to %s: "

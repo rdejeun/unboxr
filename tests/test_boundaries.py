@@ -262,9 +262,10 @@ class TestPackagingBoundary(unittest.TestCase):
         self.assertEqual({"attr": "unboxr.__version__"},
                          self.pyproject["tool"]["setuptools"]["dynamic"]["version"])
         # ENGRAVED ON PURPOSE, and the one guard in this file that the
-        # version -- not the package surface -- makes go red. 1.1.0 is the
-        # extraction document: additions only, so a minor version.
-        self.assertEqual("1.1.0", unboxr.__version__)
+        # version -- not the package surface -- makes go red. 1.2.0 is the
+        # link to another BOM: one option and one native field more, nothing
+        # that existed changed shape, so a minor version.
+        self.assertEqual("1.2.0", unboxr.__version__)
         source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("importlib.metadata", source)
 

@@ -65,9 +65,13 @@ from .report import (
     text_for,
 )
 from .sbom import (
+    BOM_LINK_DOCUMENT_PATTERN,
     DIGEST_STATES,
+    InvalidBomLinkError,
+    LINKED_BOM_COMMENT,
     PROPERTY_NAMES,
     build_document,
+    is_bom_link_to_a_document,
     serialise,
     write_document,
 )
@@ -88,7 +92,13 @@ from .sbom import (
 # of its path, and the command gained one option to write it. ALL ADDITIONS --
 # nothing that existed changed shape, every new parameter defaults to what the
 # previous behaviour was -- so a MINOR version, never a break.
-__version__ = "1.1.0"
+# 1.2.0: the document says which other BOM it belongs to. One native field
+# more (`externalReferences` at the root, never a property of this package's
+# own), one command option, and a check of the URN's shape that the published
+# schema does not perform. ADDITIONS again -- a document produced without the
+# new option is byte-for-byte what the previous version produced -- so a MINOR
+# version.
+__version__ = "1.2.0"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
@@ -114,6 +124,13 @@ __all__ = [
     "build_document",
     "serialise",
     "write_document",
+    # The link to another BOM. The pattern and its predicate are public for a
+    # named reason: a caller forming such a URN in the other direction reads
+    # them from here instead of transcribing the pattern a second time.
+    "BOM_LINK_DOCUMENT_PATTERN",
+    "InvalidBomLinkError",
+    "LINKED_BOM_COMMENT",
+    "is_bom_link_to_a_document",
     # Tables
     "ARCHIVE_SIGNATURES",
     "CATEGORIES_NEEDING_SEVEN_ZIP",

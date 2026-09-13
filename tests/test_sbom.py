@@ -749,11 +749,16 @@ class TestOneComponentPerPath(_Bench):
         self.assertIn("two/a.txt", names)
 
     def test_every_reference_is_unique_and_follows_the_sorted_order(self):
-        """A reference is derived from the RANK, not from the path: a later
-        story places it after a `#` in a URN, where a path would bring
-        characters to escape. The consequence is that a reference is only
-        valid against THIS document -- one file entering or leaving the corpus
-        renumbers everything."""
+        """A reference is derived from the RANK, not from the path.
+
+        THE FUTURE THIS DOCSTRING USED TO ANNOUNCE HAS BEEN SETTLED, AND THE
+        OTHER WAY. A reference was to be placed after a `#` in a URN; the link
+        this package now writes refuses that form outright, because a rank
+        renumbers the moment a file enters or leaves the corpus and such a
+        link would break at the next regeneration in silence. A reference is
+        valid against THIS document and nothing else, which is exactly why
+        nothing points into one.
+        """
         archive = self._zip_at(self.dir / "p.zip",
                                [("b.txt", "b"), ("a.txt", "a")])
         _, document = self._document_of(archive)
@@ -896,7 +901,15 @@ class TestTheWarningsTheDocumentCarries(_Bench):
     def test_the_document_says_what_it_does_not_prove(self):
         """A TECHNICAL caveat, about this document and nothing else: it does
         not claim anything about what is absent from it, and it carries no
-        verdict."""
+        verdict.
+
+        THE THIRD FRAGMENT ARRIVED WITH THE CLAUSE IT HOLDS. This test works
+        by `assertIn` on fragments, so ADDING a clause to the warning leaves
+        it green -- and REMOVING that clause again would leave it green too.
+        A clause nothing holds becomes false in silence, which is the defect
+        this suite has already paid for once. The clause and its fragment are
+        one gesture.
+        """
         archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
         _, document = self._document_of(archive)
         metadata = {p["name"]: p["value"]
@@ -904,6 +917,7 @@ class TestTheWarningsTheDocumentCarries(_Bench):
         scope = metadata[sb.DOCUMENT_SCOPE]
         self.assertIn("attests NOTHING about anything absent from it", scope)
         self.assertIn("no verdict of any kind", scope)
+        self.assertIn("means none was supplied", scope)
 
     def test_the_oracle_reminder_is_read_from_its_one_constant(self):
         """Read, never retyped. It used to exist only as prose in a docstring
@@ -1547,6 +1561,540 @@ class TestAHashIsNeverTakenForARecordThatWillBeDiscarded(_Bench):
         self.assertEqual(1, len(held.not_opened), "still one entry: dedup unchanged")
         self.assertEqual(1, len(calls),
                          "only the filing that survived paid for a hash")
+
+# ---------------------------------------------------------------------------
+# The link to another BOM, and the ratchet that holds it because the schema
+# holds nothing
+# ---------------------------------------------------------------------------
+#
+# The value below is a well-formed BOM-Link of DOCUMENT shape. The UUID is the
+# one the schema's own documentation uses as an example, so nothing about it
+# is accidental.
+GOOD_LINK = "urn:cdx:3e671687-395b-41f5-a30f-a58921a69b79/1"
+
+
+class TestTheLinkPatternIsTranscribedOnceWithItsProvenance(_Bench):
+    """The pattern is the ONE thing standing between this document and a link
+    that leads nowhere.
+
+    `externalReference.url` is an `anyOf` whose first branch is a plain
+    `iri-reference` string, and that branch swallows everything: measured on
+    13 September 2026 against the official schema, a document whose link reads
+    `anything at all` validates with ZERO errors. So the ratchet is this
+    package's own, and a second transcription of the pattern would be the
+    second source of truth this repository refuses everywhere else.
+    """
+
+    @staticmethod
+    def _package_files():
+        return sorted((REPO_ROOT / "unboxr").glob("*.py"))
+
+    @staticmethod
+    def _string_constants(path):
+        import ast
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        return [node.value for node in ast.walk(tree)
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+
+    def _comment_block_above(self, name: str) -> str:
+        """The contiguous comment lines immediately above a module-level
+        assignment, as one whitespace-normalised line.
+
+        Located by AST rather than by counting lines, so that inserting
+        anything above it does not silently empty this guard. NORMALISED
+        because a comment block is wrapped prose: a sentence straddles a line
+        break, and asserting on the raw text would fail on a reflow that
+        changed nothing -- the same discipline the contract guards already
+        apply to the module docstring and the README.
+        """
+        import ast
+        path = REPO_ROOT / "unboxr" / "sbom.py"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        tree = ast.parse("\n".join(lines), filename=str(path))
+        found = [node for node in tree.body
+                 if isinstance(node, ast.Assign)
+                 and any(getattr(target, "id", None) == name
+                         for target in node.targets)]
+        self.assertEqual(1, len(found), "exactly one assignment of " + name)
+        index = found[0].lineno - 2          # 1-based lineno, then the line above
+        block = []
+        while index >= 0 and lines[index].lstrip().startswith("#"):
+            block.append(lines[index])
+            index -= 1
+        import re
+        joined = " ".join(line.lstrip().lstrip("#")
+                          for line in reversed(block))
+        return re.sub(r"\s+", " ", joined).strip()
+
+    def test_the_pattern_is_transcribed_at_exactly_one_place(self):
+        """By AST, never by `grep`: the parser joins adjacent string literals
+        into one constant, so a pattern written over two lines is ONE value
+        here where a textual search would see two fragments and find neither.
+
+        The conjunction is deliberate -- a docstring may well show an example
+        URN, which is not a transcription of the pattern; carrying the
+        character class as well is what makes it one.
+        """
+        transcriptions = []
+        for path in self._package_files():
+            for value in self._string_constants(path):
+                if "urn:cdx:" in value and "[0-9a-f]{8}" in value:
+                    transcriptions.append((path.name, value))
+        self.assertEqual(1, len(transcriptions), transcriptions)
+        self.assertEqual("sbom.py", transcriptions[0][0])
+        self.assertEqual(sb.BOM_LINK_DOCUMENT_PATTERN, transcriptions[0][1])
+
+    def test_the_transcription_carries_its_source_its_tag_and_its_date(self):
+        """A pattern written down without saying where it came from cannot be
+        re-confronted to the schema by anyone but the person who wrote it."""
+        block = self._comment_block_above("BOM_LINK_DOCUMENT_PATTERN")
+        for fragment in ("bomLinkDocumentType", "1.7", "13 September 2026"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, block)
+
+    def test_the_transcription_says_why_it_is_not_read_at_run_time(self):
+        """Reading the schema at run time would be the obvious move, and it is
+        refused for a reason that has to be written down where the decision
+        is, or the next reader undoes it."""
+        block = self._comment_block_above("BOM_LINK_DOCUMENT_PATTERN")
+        for fragment in ("not vendored", "declares no dependency",
+                         "state of that machine"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, block)
+
+    def test_the_reason_is_the_fact_and_never_a_requirement_number_of_elsewhere(self):
+        """This package is published on its own. A reader of its source has
+        never seen the backlog of the project it was carved out of, and a
+        reason stated by reference to a number there is no reason at all.
+
+        The guard that already forbids those tokens covers the extraction
+        docstring and the README only -- this module is outside it, which is
+        exactly why the check is repeated here.
+        """
+        block = self._comment_block_above("BOM_LINK_DOCUMENT_PATTERN")
+        for token in ("NFR-", "AC-", "10.5", "deferred-work"):
+            with self.subTest(token=token):
+                self.assertNotIn(token, block)
+
+    def test_the_raw_string_is_what_is_exported_and_the_compiled_form_derives(self):
+        """A delivery check compares this constant to the schema CHARACTER FOR
+        CHARACTER. It cannot do that against a compiled object."""
+        self.assertIsInstance(sb.BOM_LINK_DOCUMENT_PATTERN, str)
+        self.assertTrue(sb.BOM_LINK_DOCUMENT_PATTERN.startswith("^"))
+        self.assertTrue(sb.BOM_LINK_DOCUMENT_PATTERN.endswith("$"))
+
+    def test_the_pattern_and_its_predicate_are_both_reachable_from_the_package(self):
+        """EXPORTING IS TWO GESTURES, not one: the name has to enter `__all__`
+        AND the import block. A name listed in one and missing from the other
+        passes every other test in this suite.
+
+        The consumer is named: a caller that has to form such a URN in the
+        other direction reads the pattern from here rather than transcribing
+        it a second time somewhere else.
+        """
+        import unboxr
+        for name in ("BOM_LINK_DOCUMENT_PATTERN", "is_bom_link_to_a_document",
+                     "InvalidBomLinkError", "LINKED_BOM_COMMENT"):
+            with self.subTest(name=name):
+                self.assertIn(name, unboxr.__all__)
+                self.assertIs(getattr(sb, name), getattr(unboxr, name))
+
+
+class TestAMalformedLinkIsRefused(_Bench):
+    """SEVEN counter-proofs, each with a test of its own.
+
+    Four are the ones the schema spike of 8 September 2026 measured the
+    validator ACCEPTING. Three more come from reading the pattern itself on
+    13 September 2026: they are the mistakes its shape invites, and no
+    document of the file said so before.
+    """
+
+    def test_a_well_formed_document_link_is_accepted(self):
+        """A ratchet that refuses everything proves nothing either."""
+        self.assertTrue(sb.is_bom_link_to_a_document(GOOD_LINK))
+
+    def test_a_link_with_no_version_at_all_is_refused(self):
+        """Accepted by the schema, measured 8 September 2026 and
+        re-confirmed 13 September 2026."""
+        self.assertFalse(sb.is_bom_link_to_a_document(
+            "urn:cdx:3e671687-395b-41f5-a30f-a58921a69b79"))
+
+    def test_a_version_of_zero_is_refused(self):
+        """The pattern reads `[1-9][0-9]*`: a BOM's first version is 1, and a
+        link to version 0 points at a document that cannot exist. Accepted by
+        the schema, measured 8 September 2026 and re-confirmed
+        13 September 2026."""
+        self.assertFalse(sb.is_bom_link_to_a_document(
+            "urn:cdx:3e671687-395b-41f5-a30f-a58921a69b79/0"))
+
+    def test_something_that_is_not_a_uuid_at_all_is_refused(self):
+        """Accepted by the schema, measured 8 September 2026 and
+        re-confirmed 13 September 2026."""
+        self.assertFalse(sb.is_bom_link_to_a_document("urn:cdx:not-a-uuid/1"))
+
+    def test_a_value_that_is_not_a_urn_of_this_kind_is_refused(self):
+        """The plainest case, and the schema accepts it too: its first branch
+        is a bare string. Measured 8 September 2026 and re-confirmed
+        13 September 2026."""
+        self.assertFalse(sb.is_bom_link_to_a_document("anything at all"))
+
+    def test_a_link_that_kept_the_urn_uuid_prefix_is_refused(self):
+        """THE MISTAKE THE SHAPE INVITES. A serial number reads
+        `urn:uuid:<uuid>` and a link reads `urn:cdx:<uuid>/<version>`: the
+        UUID is BARE in the second. Pasting a serial number in produces a
+        value the pattern refuses -- and that nothing else would. Measured
+        13 September 2026."""
+        self.assertFalse(sb.is_bom_link_to_a_document(
+            "urn:cdx:urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79/1"))
+
+    def test_an_uppercase_uuid_is_refused(self):
+        """The pattern spells the character class `[0-9a-f]`, lowercase. The
+        same UUID in capitals is a different string to it, and a UUID printed
+        by a tool that upper-cases is the ordinary way to arrive here.
+        Measured 13 September 2026."""
+        self.assertFalse(sb.is_bom_link_to_a_document(
+            "urn:cdx:3E671687-395B-41F5-A30F-A58921A69B79/1"))
+
+    def test_a_trailing_newline_is_refused_and_tells_the_two_calls_apart(self):
+        """THE ONE COUNTER-PROOF THAT DISTINGUISHES `fullmatch` FROM `match`.
+
+        Python's `$` accepts a final newline; the `$` of ECMA-262, which is
+        the semantics a JSON Schema pattern carries, does not. Measured on
+        13 September 2026, and asserted here as the measurement it is: `match`
+        returns a match on this value and `fullmatch` returns none. The
+        ratchet being the only defence -- the schema swallows the lot -- a
+        hole of exactly this shape would never be seen by anything.
+        """
+        import re
+        self.assertIsNotNone(
+            re.match(sb.BOM_LINK_DOCUMENT_PATTERN, GOOD_LINK + "\n"),
+            "the measurement this whole test rests on")
+        self.assertIsNone(
+            re.fullmatch(sb.BOM_LINK_DOCUMENT_PATTERN, GOOD_LINK + "\n"))
+        self.assertFalse(sb.is_bom_link_to_a_document(GOOD_LINK + "\n"))
+
+    def test_the_element_form_is_refused_although_the_schema_admits_it(self):
+        """A DECISION OF THIS PACKAGE, not a constraint of the format, and
+        reversible as such. Two reasons, either of which suffices: `unboxr`
+        knows no `bom-ref` of the document it points at, and a `bom-ref` of
+        its own is a RANK that renumbers the moment a file enters or leaves
+        the corpus -- so a link into an element would break at the next
+        regeneration, in silence, the schema seeing nothing."""
+        self.assertFalse(sb.is_bom_link_to_a_document(
+            GOOD_LINK + "#unboxr-component-7"))
+
+    def test_anything_that_is_not_a_string_is_refused_rather_than_raising(self):
+        """The predicate answers a question; it does not decide that a caller
+        handing over the wrong kind of thing has a link."""
+        for value in (None, 1, b"urn:cdx:", ["a"]):
+            with self.subTest(value=value):
+                self.assertFalse(sb.is_bom_link_to_a_document(value))
+
+
+class TestTheDocumentCarriesTheLink(_Bench):
+
+    def _document_with_a_link(self, link=GOOD_LINK):
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
+        prepared = ux.prepare_source(str(archive), workspace=self.dir / "w")
+        return sb.build_document(prepared.report, prepared.tree,
+                                 source=str(archive),
+                                 source_digest=prepared.digest,
+                                 source_kind=sb.SOURCE_IS_ARCHIVE,
+                                 linked_bom=link)
+
+    def test_the_link_is_written_at_the_root_and_never_on_metadata(self):
+        """Read from the schema on 13 September 2026: `externalReferences`
+        exists at the ROOT of a BOM and does NOT exist on `metadata`. Writing
+        it there would make the document invalid -- and the mistake is an easy
+        one, `metadata` being where everything else this package adds goes."""
+        document = self._document_with_a_link()
+        self.assertIn("externalReferences", document)
+        self.assertNotIn("externalReferences", document["metadata"])
+        self.assertEqual(1, len(document["externalReferences"]))
+
+    def test_the_entry_carries_three_keys_and_invents_none(self):
+        """`externalReference` is `additionalProperties: false` and admits
+        `url`, `comment`, `type`, `hashes` and `properties` -- read from the
+        schema on 13 September 2026. A key of this package's own devising
+        would make the document invalid, and there is no `unboxr:` property
+        here for the same reason there is none anywhere else the schema
+        already provides the field."""
+        entry = self._document_with_a_link()["externalReferences"][0]
+        self.assertEqual({"type", "url", "comment"}, set(entry))
+
+    def test_the_type_is_the_schema_value_for_a_bill_of_materials(self):
+        """One of the 47 values of the enumeration, read on 13 September 2026,
+        and the one described as a bill of materials."""
+        entry = self._document_with_a_link()["externalReferences"][0]
+        self.assertEqual("bom", entry["type"])
+
+    def test_the_comment_says_what_the_link_does_not_attest(self):
+        """POSITIVE ONLY, APPLIED TO THE LINK ITSELF. `unboxr` does not open
+        the document it points at: it cannot know that it exists, and it
+        cannot know that it describes this extraction. A link that said
+        nothing would be read as asserting both."""
+        entry = self._document_with_a_link()["externalReferences"][0]
+        self.assertEqual(sb.LINKED_BOM_COMMENT, entry["comment"])
+        self.assertIn("does not open", sb.LINKED_BOM_COMMENT)
+        self.assertIn("neither that the document exists",
+                      sb.LINKED_BOM_COMMENT)
+        self.assertIn("describes this extraction", sb.LINKED_BOM_COMMENT)
+
+    def test_the_link_is_taken_as_given_and_never_composed_here(self):
+        """`unboxr` receives the URN formed. It does not assemble one out of a
+        serial number and a version, because how a caller numbers its own
+        documents is not this package's business -- and a composer would be a
+        point of extension built for a consumer that has not asked for it.
+
+        Proven on the observable: the URN written is the string handed over,
+        and it has nothing to do with this document's own serial number.
+        """
+        document = self._document_with_a_link()
+        self.assertEqual(GOOD_LINK, document["externalReferences"][0]["url"])
+        self.assertNotIn(document["serialNumber"].removeprefix("urn:uuid:"),
+                         document["externalReferences"][0]["url"])
+
+    def test_the_urn_that_is_actually_written_satisfies_the_pattern(self):
+        """THE RATCHET BITES ON THE OUTPUT, NEVER ON THE INPUT. Confronting
+        the value handed in would leave a transformation made downstream of
+        the check -- a strip, a join, a re-encoding -- entirely unseen."""
+        document = self._document_with_a_link()
+        self.assertTrue(sb.is_bom_link_to_a_document(
+            document["externalReferences"][0]["url"]))
+
+    def test_a_malformed_link_raises_rather_than_being_written(self):
+        """The library refuses what it knows to be false. It does not write
+        it, and the failure carries the value it refused."""
+        with self.assertRaises(sb.InvalidBomLinkError) as raised:
+            self._document_with_a_link("urn:cdx:not-a-uuid/1")
+        self.assertIn("urn:cdx:not-a-uuid/1", str(raised.exception))
+
+    def test_a_malformed_link_is_never_quietly_downgraded_to_no_link(self):
+        """A silent fallback would make the attachment the caller asked for
+        disappear, leaving a document that looks exactly like one nobody ever
+        wanted linked."""
+        with self.assertRaises(sb.InvalidBomLinkError):
+            self._document_with_a_link(GOOD_LINK + "#unboxr-component-1")
+
+
+class TestTheAbsenceOfALinkIsAStatedFact(_Bench):
+
+    def _document_without_a_link(self):
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
+        _, document = self._document_of(archive)
+        return document
+
+    def test_without_a_link_the_key_is_absent_and_never_an_empty_array(self):
+        """AN EMPTY ARRAY WOULD READ AS "we looked, there is none" -- a
+        negative drawn from an absence, which is the one reading this package
+        refuses everywhere.
+
+        AND THIS IS A RULE OF THIS PACKAGE, NOT OF THE FORMAT: measured on
+        13 September 2026, a document carrying `externalReferences: []`
+        validates with zero errors. Saying so keeps a later reader from
+        relaxing this as a redundant restatement of the schema.
+        """
+        document = self._document_without_a_link()
+        self.assertNotIn("externalReferences", document)
+
+    def test_the_document_says_what_an_absent_reference_means(self):
+        """Without it, a reader who is holding the other document would read
+        the silence as saying the two do not go together.
+
+        THE CLAUSE IS TRUE IN BOTH CASES, because the warning is emitted on
+        every document: it states the rule for READING an absent reference,
+        never the state of this particular document.
+        """
+        document = self._document_without_a_link()
+        metadata = {p["name"]: p["value"]
+                    for p in document["metadata"]["properties"]}
+        self.assertIn("means none was supplied", metadata[sb.DOCUMENT_SCOPE])
+
+    def test_the_same_clause_is_there_when_a_link_is_supplied(self):
+        """Emitted systematically, so it cannot be written as if the link were
+        always absent."""
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
+        prepared = ux.prepare_source(str(archive), workspace=self.dir / "w")
+        document = sb.build_document(prepared.report, prepared.tree,
+                                     source=str(archive),
+                                     source_digest=prepared.digest,
+                                     source_kind=sb.SOURCE_IS_ARCHIVE,
+                                     linked_bom=GOOD_LINK)
+        metadata = {p["name"]: p["value"]
+                    for p in document["metadata"]["properties"]}
+        self.assertIn("means none was supplied", metadata[sb.DOCUMENT_SCOPE])
+
+    def test_the_link_adds_no_property_of_this_package_to_the_document(self):
+        """A property whose native field the schema already provides does not
+        exist here: the link is `externalReferences`, the sense of it is the
+        native `comment`. The published table of property names is unchanged,
+        and so is the minor-version rule that goes with it."""
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
+        prepared = ux.prepare_source(str(archive), workspace=self.dir / "w")
+        document = sb.build_document(prepared.report, prepared.tree,
+                                     source=str(archive),
+                                     source_digest=prepared.digest,
+                                     source_kind=sb.SOURCE_IS_ARCHIVE,
+                                     linked_bom=GOOD_LINK)
+        text = sb.serialise(document)
+        names = {p["name"] for p in document["metadata"]["properties"]}
+        self.assertEqual(set(sb.METADATA_PROPERTY_NAMES), names)
+        self.assertNotIn("unboxr:linkedBom", text)
+
+
+class TestTheInjectionHooksSurviveTheLink(_Bench):
+    """`serial_number=` and `timestamp=` have been accepted since the document
+    story and had no test and no caller: measured on 13 September 2026. The
+    link restructures the very `return` they feed into, so a hook broken in
+    passing would have gone unnoticed. They are covered now."""
+
+    def test_an_injected_serial_number_and_timestamp_are_used_as_given(self):
+        held = ux.new_report()
+        document = sb.build_document(
+            held, self._tree(), source="p.zip",
+            source_kind=sb.SOURCE_IS_ARCHIVE,
+            serial_number="urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79",
+            timestamp="2026-09-13T00:00:00+00:00")
+        self.assertEqual("urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79",
+                         document["serialNumber"])
+        self.assertEqual("2026-09-13T00:00:00+00:00",
+                         document["metadata"]["timestamp"])
+
+    def test_the_hooks_still_default_to_a_value_the_document_computes(self):
+        held = ux.new_report()
+        document = sb.build_document(held, self._tree(), source="p.zip",
+                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        self.assertTrue(document["serialNumber"].startswith("urn:uuid:"))
+        self.assertEqual(1, document["version"])
+
+
+class TestTheCommandLinksTheDocument(_CommandBench):
+
+    def test_the_option_writes_the_link_into_the_document(self):
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
+        document_path = self.dir / "sbom.json"
+
+        code, out, _ = self._run([str(archive), str(self.dir / "d"),
+                                  "--sbom", str(document_path),
+                                  "--linked-bom", GOOD_LINK])
+
+        self.assertEqual(0, code)
+        document = self._read(document_path)
+        self.assertEqual(GOOD_LINK, document["externalReferences"][0]["url"])
+        # `stdout` still carries the tree and nothing else.
+        self.assertEqual(1, len(out.strip().splitlines()))
+        self.assertNotIn("urn:cdx:", out)
+
+    def test_a_malformed_link_is_refused_at_option_parsing(self):
+        """Refused BEFORE anything is extracted: usage error, no destination
+        created, no document written. A long extraction thrown away at the
+        final write would look like work that never happened."""
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
+        destination = self.dir / "d"
+        document_path = self.dir / "sbom.json"
+
+        code, _, err = self._run([str(archive), str(destination),
+                                  "--sbom", str(document_path),
+                                  "--linked-bom", "urn:cdx:not-a-uuid/1"])
+
+        self.assertEqual(2, code)
+        self.assertIn("--linked-bom", err)
+        self.assertFalse(destination.exists(),
+                         "nothing may be created before the refusal")
+        self.assertFalse(document_path.exists())
+
+    def test_a_malformed_link_wins_over_an_unusable_destination(self):
+        """Two refusals are possible from these arguments -- the link's own
+        shape, and `--sbom`'s destination sitting inside the tree it would
+        inventory -- and nothing before this test pinned which one a caller
+        actually sees. `check_linked_bom` runs BEFORE `check_document_path`
+        (Dev Notes, AC-3.2): the link fault is the only one decidable from
+        the arguments alone, with no state of the file system able to
+        preempt it. A reordering of the two calls in `main` would silently
+        change the reported cause with nothing here to go red."""
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
+        destination = self.dir / "d"
+
+        code, _, err = self._run([
+            str(archive), str(destination),
+            "--sbom", str(destination / "extracted" / "sbom.json"),
+            "--linked-bom", "urn:cdx:not-a-uuid/1"])
+
+        self.assertEqual(2, code)
+        self.assertIn("--linked-bom", err)
+        self.assertNotIn("inside the tree it inventories", err)
+        self.assertFalse(destination.exists(),
+                         "nothing may be created before the refusal")
+
+    def test_the_link_option_without_the_document_option_is_refused(self):
+        """An option that has no object is REFUSED, never ignored: ignoring it
+        would let a caller believe an attachment was recorded somewhere when
+        no document was written at all.
+
+        The dependency is checked BEFORE the value: an option with no object
+        at all is not examined for the shape of its argument, or a caller who
+        forgot `--sbom` would be sent to fix the wrong thing.
+        """
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
+        destination = self.dir / "d"
+
+        code, _, err = self._run([str(archive), str(destination),
+                                  "--linked-bom", "urn:cdx:not-a-uuid/1"])
+
+        self.assertEqual(2, code)
+        self.assertIn("--sbom", err)
+        self.assertFalse(destination.exists())
+
+    def test_the_failure_path_carries_the_link_too(self):
+        """THE RUN THAT MOST NEEDS REATTACHING. There is no tree, the corpus is
+        as amputated as it ever gets, and the document says so -- a run in
+        that state is precisely the one an analyst has to be able to tie back
+        to the conclusion it fed. The document is written by TWO call sites in
+        the command, and wiring only the nominal one would leave this branch
+        without a link and nothing would go red."""
+        refused = self.dir / "p.tar.zst"
+        refused.write_bytes(ZSTD_MAGIC + b"undecodable")
+        document_path = self.dir / "sbom.json"
+
+        code, _, _ = self._run([str(refused), str(self.dir / "d"),
+                                "--sbom", str(document_path),
+                                "--linked-bom", GOOD_LINK])
+
+        self.assertEqual(1, code)
+        document = self._read(document_path)
+        metadata = {p["name"]: p["value"]
+                    for p in document["metadata"]["properties"]}
+        self.assertEqual(sb.OUTCOME_FAILED, metadata[sb.EXTRACTION_OUTCOME])
+        self.assertEqual(GOOD_LINK, document["externalReferences"][0]["url"])
+
+    def test_a_source_that_is_already_a_directory_carries_the_link_too(self):
+        """Nothing is extracted on this branch and the report is empty; the
+        link is written exactly as it is anywhere else."""
+        source = self.dir / "given"
+        source.mkdir()
+        (source / "pkg.py").write_text("y")
+        document_path = self.dir / "sbom.json"
+
+        code, _, _ = self._run([str(source), str(self.dir / "d"),
+                                "--sbom", str(document_path),
+                                "--linked-bom", GOOD_LINK])
+
+        self.assertEqual(0, code)
+        document = self._read(document_path)
+        metadata = {p["name"]: p["value"]
+                    for p in document["metadata"]["properties"]}
+        self.assertEqual(sb.SOURCE_IS_DIRECTORY, metadata[sb.SOURCE_KIND])
+        self.assertEqual(GOOD_LINK, document["externalReferences"][0]["url"])
+
+    def test_without_the_option_no_document_carries_a_link(self):
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
+        document_path = self.dir / "sbom.json"
+
+        code, _, _ = self._run([str(archive), str(self.dir / "d"),
+                                "--sbom", str(document_path)])
+
+        self.assertEqual(0, code)
+        self.assertNotIn("externalReferences", self._read(document_path))
 
 
 if __name__ == "__main__":

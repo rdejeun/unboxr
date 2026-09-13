@@ -65,6 +65,7 @@ you can pipe it.
 | `-v`, `--verbose` | show debug records as well |
 | `-q`, `--quiet` | warnings only -- **plus every announced amputation** |
 | `--sbom FILE` | also write the extraction document to FILE (see below) |
+| `--linked-bom URN` | record which other BOM that document belongs to (see below) |
 | `--version` | print the version and exit |
 | `--help` | the full usage |
 
@@ -77,6 +78,13 @@ to list every file present when the extraction finished, and writing it there
 makes the claim false at the moment it is written. `DESTINATION/sbom.json`,
 beside `extracted/`, is fine; `DESTINATION/extracted/sbom.json` is not. The
 same refusal applies to writing inside a source directory you handed over.
+
+`--linked-bom` is refused, before anything is extracted and with nothing
+created, in two cases. Without `--sbom` there is no document to record the link
+in, and an option quietly ignored would let you believe something was recorded
+when nothing was written at all. And a URN whose shape `unboxr` does not
+recognise is refused rather than written: see below for what the shape is and
+why nothing else checks it.
 
 This command line is deliberately a **floor**. It writes no document unless you
 ask for one, and it has no self-check gate, no strict mode and no verdict of
@@ -235,6 +243,85 @@ allowed to be reworded.
 raises the minor version. Every property is emitted systematically, so every
 consumer sees a new one on the first document produced after the change.
 
+### Which BOM this document belongs to
+
+An extraction document is evidence for something else: the inventory of a
+corpus that some other BOM draws a conclusion about. Rather than leaving the
+two to be matched up by hand, on a file name or a timestamp, the document
+records the link itself.
+
+```sh
+unboxr pkg-1.2.3.tar.gz ./unpacked \
+    --sbom sbom.json \
+    --linked-bom urn:cdx:3e671687-395b-41f5-a30f-a58921a69b79/1
+```
+
+It lands at the **root** of the document, as a native `externalReferences`
+entry of type `bom` -- never as a property of `unboxr`'s own, the schema
+already providing the field:
+
+```json
+"externalReferences": [
+  {
+    "comment": "The BOM this document belongs to, as supplied ...",
+    "type": "bom",
+    "url": "urn:cdx:3e671687-395b-41f5-a30f-a58921a69b79/1"
+  }
+]
+```
+
+(Keys above are alphabetical, matching what the tool actually writes --
+`serialise()` sorts keys, so a real document never reads `type`, `url`,
+`comment` in that order.)
+
+**The URN is handed over, never composed here.** How you number your own
+documents is not `unboxr`'s business. The shape is `urn:cdx:<uuid>/<version>`,
+where the UUID is the one inside the other document's `serialNumber` -- **bare,
+with no `urn:uuid:` prefix** -- in **lowercase** hexadecimal, and the version is
+that document's own, `1` or more.
+
+From the library, the same link is a keyword argument of `build_document`:
+
+```python
+document = unboxr.build_document(prepared.report, prepared.tree,
+                                 source="pkg-1.2.3.tar.gz",
+                                 source_digest=prepared.digest,
+                                 source_kind="archive",
+                                 linked_bom="urn:cdx:3e671687-395b-41f5-a30f-a58921a69b79/1")
+```
+
+A link it does not recognise raises `unboxr.InvalidBomLinkError` rather than
+being dropped: writing no link would make the attachment you asked for vanish
+into a document that looks exactly like one nobody wanted linked. The pattern
+and the check are public -- `unboxr.BOM_LINK_DOCUMENT_PATTERN` and
+`unboxr.is_bom_link_to_a_document` -- so a caller forming such a URN in the
+other direction reads them from here instead of transcribing them again.
+
+**What the link does not attest**, and the document says so in the entry's
+`comment`: `unboxr` does not open the document you point at and does not
+resolve it. It cannot know that it exists, and it cannot know that it describes
+this extraction.
+
+**No link, no key.** A document produced without the option carries no
+`externalReferences` at all -- never an empty array, which would read as *we
+looked, there is none*. The document's own scope warning states the rule for
+reading that absence, so it cannot be mistaken for *this extraction belongs to
+nothing*.
+
+**Why `unboxr` checks the shape at all.** The published schema does not. An
+external reference's `url` accepts a plain string, so a document carrying a
+link that leads nowhere validates with zero errors -- measured against the
+official 1.7 schema. A piece of evidence asserting a false attachment is worse
+than one asserting none, so the check lives here: the URN is confronted with
+the pattern the schema declares for a BOM-Link to a document, and anything it
+does not recognise is refused rather than written.
+
+**Two runs of the same upstream chain carry two different URNs.** The document
+you point at is given a fresh serial number every time it is generated, so a
+link recorded today and a link recorded tomorrow differ even when nothing else
+did. That does not weaken this document's own determinism: the URN is an
+*input*, and for one input the bytes are unchanged.
+
 ### `bom-ref` only means something against this document
 
 Each component's `bom-ref` is derived from its rank in the sorted order, not
@@ -242,9 +329,14 @@ from its path -- a path would need escaping wherever a `bom-ref` is placed
 after a `#` in a BOM-Link URN. **The consequence**: a rank renumbers every
 time a file enters or leaves the corpus, so a link of the shape
 `...#unboxr-component-7` is valid against *this exact document* and not
-against "the extraction SBOM of this package" in general. That is tenable
-when two linked documents are produced together, and silent otherwise -- a
-regeneration will break the link without saying so.
+against "the extraction inventory of this package" in general -- a
+regeneration would break it without saying so, and no validator would see it.
+
+**That is why `--linked-bom` refuses that shape.** The only link `unboxr`
+writes points at a **document**, never into one of its elements. The refusal
+is this package's decision and not the format's, which admits both; it is
+reversible, and nothing in the format would stop a later version from
+accepting the element shape with the caveat above stated out loud.
 
 ### What it does not do
 
