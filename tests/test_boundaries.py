@@ -255,6 +255,23 @@ class TestPackagingBoundary(unittest.TestCase):
             with self.subTest(probe=probe):
                 self.assertNotIn(probe, source)
 
+    def test_the_licence_is_declared_once_and_as_an_expression(self):
+        """PEP 639 superseded the `License ::` classifiers, and setuptools 77
+        onwards REFUSES a project that carries both. Declaring the licence twice
+        is not redundancy here: it makes `pip install .` -- the very command the
+        README puts first -- fail outright on a current toolchain.
+
+        This guard exists because that is exactly what happened: five closed
+        stories shipped a package that could not be installed, none of them
+        having ever run the installation they document.
+        """
+        project = self.pyproject["project"]
+        self.assertEqual("MIT", project["license"])
+        self.assertEqual(["LICENSE.md"], project["license-files"])
+        for classifier in project["classifiers"]:
+            with self.subTest(classifier=classifier):
+                self.assertFalse(classifier.startswith("License ::"))
+
     def test_the_version_has_a_single_source_of_truth(self):
         """`pyproject.toml` reads the package; the reverse is forbidden, because
         reading installed metadata fails from a clone that was never installed."""
