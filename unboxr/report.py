@@ -126,6 +126,14 @@ EXTRACTION_KEPT_UNDER_PROVISIONAL_NAME = "extraction_kept_under_provisional_name
 DIRECTORY_OF_A_DIFFERENT_ORIGIN_DISCARDED = "directory_of_a_different_origin_discarded"
 ARCHIVE_OUTSIDE_THE_ANALYSED_ROOT = "archive_outside_the_analysed_root"
 FLATTENING_FINISHED_WITH_UNOPENED_ARCHIVES = "flattening_finished_with_unopened_archives"
+# A URL's downloaded copy, under `--no-archive-dir`, where the extraction
+# root IS the workspace it was written into: consumed after extraction (story
+# 14.8, D-C), and this is what is filed on the rare occasion that removal
+# itself fails. Distinct from `ARCHIVE_KEPT_AFTER_SUCCESSFUL_EXTRACTION`: that
+# one names content left under a PROVISIONAL name, which does not exist on
+# this path -- there is no rename dance under `--no-archive-dir`, the
+# download simply stays exactly where it was written, beside the tree.
+DOWNLOADED_COPY_KEPT_ALONGSIDE_THE_TREE = "downloaded_copy_kept_alongside_the_tree"
 
 # The corpus grows.
 RECOGNISED_BY_CONTENT = "recognised_by_content"
@@ -178,6 +186,9 @@ CAUSE_TEXTS = {
         "name depends on this machine",
     FLATTENING_FINISHED_WITH_UNOPENED_ARCHIVES:
         "flattening finished while containers remained unopened",
+    DOWNLOADED_COPY_KEPT_ALONGSIDE_THE_TREE:
+        "a URL's downloaded copy could not be removed and stays beside the "
+        "extracted tree",
 
     RECOGNISED_BY_CONTENT:
         "a container was recognised by its first bytes, its extension being "
@@ -207,6 +218,7 @@ CAUSE_KINDS = {
     DIRECTORY_OF_A_DIFFERENT_ORIGIN_DISCARDED: STILL_IN_TREE,
     ARCHIVE_OUTSIDE_THE_ANALYSED_ROOT: STILL_IN_TREE,
     FLATTENING_FINISHED_WITH_UNOPENED_ARCHIVES: LOG_ONLY,
+    DOWNLOADED_COPY_KEPT_ALONGSIDE_THE_TREE: STILL_IN_TREE,
 
     RECOGNISED_BY_CONTENT: WIDENED,
 }
@@ -315,6 +327,10 @@ NOT_AN_AMPUTATION = {
     DIRECTORY_OF_A_DIFFERENT_ORIGIN_DISCARDED: (
         "%s: %s already held content as a directory of a different origin; it "
         "is discarded, not merged, to make room for this extraction."
+    ),
+    DOWNLOADED_COPY_KEPT_ALONGSIDE_THE_TREE: (
+        "The downloaded copy %s could not be removed (%s): it stays "
+        "alongside the extracted tree in %s."
     ),
 }
 

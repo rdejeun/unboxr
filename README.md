@@ -50,18 +50,52 @@ dependencies**: it imports nothing outside the Python standard library.
 unboxr ARCHIVE DESTINATION
 ```
 
+Three modes, and one contract: the extracted tree is always named after the
+archive, never after a fixed word `unboxr` made up.
+
+**Default.** The tree is created at `DESTINATION/<archive name>`, verbatim:
+
 ```sh
 unboxr package-1.2.3.tar.gz ./unpacked
-# -> ./unpacked/extracted/...
+# -> ./unpacked/package-1.2.3.tar.gz/...
 ```
 
-The destination must be empty or absent: `unboxr` refuses to write into a
-directory that already holds something rather than merge into it. The extracted
-tree is created in `DESTINATION/extracted`, and its path is printed on stdout so
-you can pipe it.
+DESTINATION may hold other things -- `unboxr` claims a *name* inside it, not
+the whole directory. It refuses to write into a path that is already taken by
+something other than the archive itself, and says which path.
+
+**`--replace`.** The archive is extracted *in place* and replaced by its own
+content -- no DESTINATION is given at all:
+
+```sh
+unboxr --replace package-1.2.3.tar.gz
+# -> ./package-1.2.3.tar.gz/... (the archive file is gone)
+```
+
+The archive is removed only after a successful extraction. Refused on a URL
+(there is no local file to replace) and when the source is already a
+directory.
+
+**`--no-archive-dir`.** No directory named after the archive is created; the
+content is unpacked straight into DESTINATION, which must then be empty or
+absent -- the older rule, kept for this mode alone:
+
+```sh
+unboxr --no-archive-dir package-1.2.3.tar.gz ./unpacked
+# -> ./unpacked/...
+```
+
+Here the extracted tree *is* DESTINATION, so no `--sbom` path under
+DESTINATION is acceptable any more: the document would list every file
+present when the extraction finished, itself included. Refused when the
+source is already a directory.
+
+`--replace` and `--no-archive-dir` are mutually exclusive.
 
 | Option | Effect |
 |---|---|
+| `--replace` | extract the archive in place and replace it (see above) |
+| `--no-archive-dir` | unpack straight into DESTINATION, no wrapper directory (see above) |
 | `-v`, `--verbose` | show debug records as well |
 | `-q`, `--quiet` | warnings only -- **plus every announced amputation** |
 | `--sbom FILE` | also write the extraction document to FILE (see below) |
@@ -76,8 +110,10 @@ the document, `2` usage error.
 fall **inside the tree that is about to be inventoried**: that document claims
 to list every file present when the extraction finished, and writing it there
 makes the claim false at the moment it is written. `DESTINATION/sbom.json`,
-beside `extracted/`, is fine; `DESTINATION/extracted/sbom.json` is not. The
-same refusal applies to writing inside a source directory you handed over.
+beside the tree, is fine in the default and `--replace` modes; under
+`--no-archive-dir` the tree *is* DESTINATION, so nothing beside it is left.
+The same refusal applies to writing inside a source directory you handed
+over, or over the source archive itself.
 
 `--linked-bom` is refused, before anything is extracted and with nothing
 created, in two cases. Without `--sbom` there is no document to record the link
@@ -382,12 +418,15 @@ strictly local. There is no telemetry, no update check, and no index lookup.
    happens to enumerate directory entries.
 2. **Extraction directory names.** Two names, and they are not the same
    promise.
-   - The **final** name: a nested archive is flattened into a directory
-     carrying that archive's own name, in full and verbatim -- extension
-     included, no case folding, no stripping. `toto.jar` yields `toto.jar/`.
-     The name is *inherited* from the input rather than built here, so two
-     archives that differ by a single character can no longer land in one
-     directory and merge their content.
+   - The **final** name: *every* archive -- at any nesting level, level 0
+     included: the one you hand to `unboxr` directly, or the one downloaded
+     from a URL -- is flattened into a directory carrying that archive's own
+     name, in full and verbatim -- extension included, no case folding, no
+     stripping. `toto.jar` yields `toto.jar/`. The name is *inherited* from
+     the input rather than built here, so two archives that differ by a
+     single character can no longer land in one directory and merge their
+     content. Level 0 has two other modes besides this default one -- see
+     "Use it from the command line".
    - The **provisional** name: that final path is held by the archive itself
      until it is removed, so the extraction is first written under a name
      derived from the SHA-256 digest of the archive's POSIX relative path --
@@ -450,6 +489,12 @@ happened. Compare two documents on one machine, under one version of `unboxr`.
   fails, and a failed extraction leaves it behind too. It is deterministic in
   both cases, which is the whole reason it is a digest rather than a temporary
   directory.
+- **No guarantee that the extraction root is a valid path component.** Its
+  name is *inherited* from the input -- the archive's own name as given, or
+  the last segment of its URL -- exactly as the final name of a nested
+  archive already only inherits, never validates, its own name; this extends
+  that same non-guarantee down to level 0, the root the whole tree grows
+  from.
 
 ## Development
 

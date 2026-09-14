@@ -279,10 +279,16 @@ class TestPackagingBoundary(unittest.TestCase):
         self.assertEqual({"attr": "unboxr.__version__"},
                          self.pyproject["tool"]["setuptools"]["dynamic"]["version"])
         # ENGRAVED ON PURPOSE, and the one guard in this file that the
-        # version -- not the package surface -- makes go red. 1.2.0 is the
-        # link to another BOM: one option and one native field more, nothing
-        # that existed changed shape, so a minor version.
-        self.assertEqual("1.2.0", unboxr.__version__)
+        # version -- not the package surface -- makes go red. 2.0.0 is story
+        # 14.8: the level-0 extraction root stopped being the fixed name
+        # `extracted` and started carrying the archive's own name, exactly
+        # as the determinism contract already promised for a nested one --
+        # EVERY caller of `prepare_source`, and every invocation of the
+        # command line, gets a tree at a different path than before, with
+        # nothing to opt into. That is a change of SHAPE to the default
+        # behaviour, not an addition, so a major version -- even though two
+        # new options (`--replace`, `--no-archive-dir`) ship alongside it.
+        self.assertEqual("2.0.0", unboxr.__version__)
         source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("importlib.metadata", source)
 

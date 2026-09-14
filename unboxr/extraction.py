@@ -28,12 +28,16 @@ the consumer.
 
 2. Extraction directory names. Two names, and they are not the same promise.
 
-   (a) The FINAL name. A nested archive is flattened into a directory carrying
-       that archive's own name, in full and verbatim: extension included, no
-       case folding, no stripping. `toto.jar` yields `toto.jar/`. The name is
-       INHERITED from the input rather than built here, so two archives that
-       differ by a single character can no longer land in one directory and
-       merge their content.
+   (a) The FINAL name. EVERY archive -- at any nesting level, level 0
+       included: the one handed to `prepare_source` directly, or the one
+       `download_source` just wrote for a URL -- is flattened into a
+       directory carrying that archive's own name, in full and verbatim:
+       extension included, no case folding, no stripping. `toto.jar` yields
+       `toto.jar/`. The name is INHERITED from the input rather than built
+       here, so two archives that differ by a single character can no longer
+       land in one directory and merge their content. Level 0 has two other
+       modes besides this default one -- see `resolve_extraction_root` and
+       `unboxr.cli` for `--replace` and `--no-archive-dir`.
 
    (b) The PROVISIONAL name. That final path is held by the archive itself
        until it is removed, so the extraction is first written under a name
@@ -114,6 +118,12 @@ WHAT THE CONTRACT DOES NOT GUARANTEE
   rename fails, and a failed extraction leaves it behind too. It is
   deterministic in both cases, which is the whole reason it is a digest rather
   than a temporary directory.
+- No guarantee that the extraction root is a valid path component. Its name is
+  INHERITED from the input -- the archive's own name as given, or the last
+  segment of its URL -- exactly as guarantee 2(a) already only inherits,
+  never validates, the FINAL name of an archive nested at any deeper level;
+  this extends that same non-guarantee down to level 0, the root the whole
+  tree grows from (story 14.8 of the upstream project, crypto-scan).
 
 LOGGING
 -------
@@ -150,6 +160,7 @@ from .report import (
     CapabilityProfile,
     DESTINATION_ALREADY_OCCUPIED,
     DIRECTORY_OF_A_DIFFERENT_ORIGIN_DISCARDED,
+    DOWNLOADED_COPY_KEPT_ALONGSIDE_THE_TREE,
     EXTRACTION_FAILED,
     EXTRACTION_KEPT_UNDER_PROVISIONAL_NAME,
     ExtractionReport,
@@ -883,6 +894,19 @@ def _name_without_extension(path: Path, matched_ext: str) -> str:
 PROVISIONAL_DIGEST_LENGTH = 16
 
 
+def _provisional_name_from_relative_path(relative_posix: str) -> str:
+    """The one place the digest scheme of a provisional name is written.
+
+    Shared by `_provisional_extraction_name` (nested archives, and the URL
+    and `--replace` cases at level 0, all of which reduce to a path relative
+    to SOME root -- see `_provisional_name_at_level_zero`) so the two never
+    drift into two different shapes for what is, in both cases, "the same
+    archive, held under a name nobody else can already be holding".
+    """
+    digest = hashlib.sha256(relative_posix.encode("utf-8")).hexdigest()[:PROVISIONAL_DIGEST_LENGTH]
+    return f"archive_{digest}"
+
+
 def _provisional_extraction_name(archive: Path, root: Path, *, report=None,
                                  level=None) -> str:
     """
@@ -924,8 +948,32 @@ def _provisional_extraction_name(archive: Path, root: Path, *, report=None,
         _record(report, ARCHIVE_OUTSIDE_THE_ANALYSED_ROOT, archive, None, level,
                 digest_of=archive)
         relative = archive.as_posix()
-    digest = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:PROVISIONAL_DIGEST_LENGTH]
-    return f"archive_{digest}"
+    return _provisional_name_from_relative_path(relative)
+
+
+def _provisional_name_at_level_zero(archive: Path) -> str:
+    """
+    The provisional name for the FIRST-level archive: the one the caller
+    handed in, or the one `download_source` just wrote for a URL.
+
+    No `root` for this archive exists yet -- the tree it will seed has not
+    been created -- so `_provisional_extraction_name`'s notion of "the path
+    relative to the analysed root" has no object here. Reusing it as is would
+    fire its `ARCHIVE_OUTSIDE_THE_ANALYSED_ROOT` branch, and its warning with
+    it, on EVERY nominal run: a local archive is essentially never a child of
+    the workspace it is about to populate. That would be exactly the noise
+    story 14.8 measured and refused to reintroduce.
+
+    The relative path that DOES have a meaning at level 0 is the archive's
+    own name, taken relative to its own immediate parent -- the one directory
+    it is unambiguously "under", whether that parent is the workspace a URL
+    was downloaded into or an arbitrary directory the caller pointed at on
+    their own file system. `archive.relative_to(archive.parent)` never raises,
+    so this never warns and never falls back to an absolute, machine-dependent
+    path -- both properties `_provisional_extraction_name` only manages to
+    keep for the nested case.
+    """
+    return _provisional_name_from_relative_path(archive.name)
 
 
 # THE ONLY NAME `unboxr` FABRICATES, and the shape it is required to keep.
@@ -1527,14 +1575,6 @@ def resolve_distribution_nature(file_name: str, matched_extension: str | None) -
 # whose comment carries the measurement that justifies it. It is NOT re-justified
 # here: no fresh measurement was made for this move, and inventing a motive would
 # pass a reuse off as a decision.
-# The one name the extracted tree is created under, beneath the workspace.
-# A CONSTANT rather than a literal repeated wherever the tree has to be named:
-# the command needs it to refuse an output path that would fall inside the tree
-# it is about to inventory, and a second spelling of the same segment drifts
-# from this one the first time either moves. Same reason `_QuietFilter` reads
-# its format strings from `unboxr.report` rather than keeping a copy.
-EXTRACTED_TREE_NAME = "extracted"
-
 _HASHING_BLOCK_SIZE = 1 << 20
 
 
@@ -1627,8 +1667,158 @@ def new_report() -> ExtractionReport:
     return ExtractionReport(capability=probe_capability_profile())
 
 
+def resolve_archive_name(source: str) -> str:
+    """The FINAL name the extraction root will carry, verbatim -- WITHOUT
+    downloading a URL to find out.
+
+    A local archive keeps its own file name. A URL never touches the network
+    here: the rule is the one `download_source` already applies internally --
+    the last segment of the URL's path, or `"downloaded_archive"` when it
+    gives none -- REPEATED, not reinvented, so a caller deciding where the
+    tree will land (`unboxr.cli`, refusing an unusable `--sbom` path before
+    anything is extracted) does not have to download first to learn it.
+    """
+    if is_url(source):
+        return Path(urlparse(source).path).name or "downloaded_archive"
+    return Path(source).name
+
+
+def resolve_extraction_root(source: str, workspace: Path | None, *,
+                            replace: bool = False,
+                            no_archive_dir: bool = False) -> Path:
+    """
+    THE single point where `workspace`, an archive's name and the three modes
+    of story 14.8 combine into the directory the extracted tree will occupy.
+    Both `prepare_source` (which extracts there) and `unboxr.cli` (which has
+    to know this path BEFORE calling `prepare_source`, to refuse an unusable
+    `--sbom` path or an already-occupied target before anything is written)
+    call this -- never recompute it apart. Two independent computations of
+    the same name are exactly how `EXTRACTED_TREE_NAME`, a shared literal,
+    and `cli.py`'s own `destination / EXTRACTED_TREE_NAME` used to stay in
+    step only because the value never varied; the day it started depending on
+    the archive and the mode, that would have stopped being true.
+
+    `replace`: the archive's own current path -- no workspace enters into it
+    at all, which is also why DESTINATION is refused alongside `--replace`
+    before this is ever reached.
+    `no_archive_dir`: `workspace` itself, with no directory named after the
+    archive created beneath it.
+    Neither: `workspace / <the archive's own name>` -- the default (AC-1).
+
+    Touches no file system: `is_url` and a path split, nothing else. That is
+    what lets `unboxr.cli` call it before the destination, or even the
+    archive, is known to exist.
+    """
+    if replace:
+        return Path(source)
+    if no_archive_dir:
+        return workspace
+    return workspace / resolve_archive_name(source)
+
+
+def _extract_replacing_archive_with_its_own_content(
+        local_path: Path, workspace: Path, *, report, digest_hex: str) -> Path:
+    """
+    Extract `local_path` under a provisional name, remove the archive, then
+    rename the extraction onto the path the archive itself just vacated --
+    EXACTLY the three-step dance `flatten_nested_archives` already performs
+    for a nested archive (story 14.8, AC-5), reused rather than reinvented.
+
+    THE ONLY TWO CALLERS THAT NEED THIS AT LEVEL 0. `--replace`, where the
+    final path IS the archive's own path by definition (D-A/D-B of the
+    story); and a URL under the default mode, where the downloaded copy sits
+    at `workspace / resolve_archive_name(source)` -- the exact path the
+    default mode's target already is, by construction, every single time
+    (`download_source` writes it there). Neither is a pre-existing
+    conflict to refuse: both are structural, and the archive is consumed the
+    same way a nested one already is.
+
+    A LOCAL archive without `--replace` is NEVER routed here: if its own
+    parent happens to be the workspace, the target and the archive coincide
+    by ACCIDENT of the caller's own arguments, not by construction, and that
+    case is refused upstream instead (`unboxr.cli`, AC-2 / AC-5.3) -- an
+    archive the caller did not ask to consume is never silently deleted.
+
+    Returns the path ACTUALLY obtained: the intended final path when the
+    rename succeeds, or the provisional path when it does not -- the tree
+    the caller gets back must always be the one that is really there. A
+    failure to extract is NOT caught here: it propagates, exactly as it does
+    for the level-0 archive today, and `digest_hex` is threaded through
+    rather than re-hashed, for the same reason `prepare_source` already
+    reuses it once (the bytes are the same bytes).
+    """
+    final_dest = local_path
+    provisional_dest = local_path.parent / _provisional_name_at_level_zero(local_path)
+
+    # THE SAME COLLISION GUARD `flatten_nested_archives` applies to its own
+    # provisional names, applied here: a workspace reused across runs, or a
+    # previous run whose rename failed and left this exact name behind, must
+    # never be silently merged into. `is_dir()` first, `iterdir()` guarded --
+    # the check must never be what amputates the run it is protecting.
+    occupied = False
+    if provisional_dest.is_dir():
+        try:
+            occupied = any(provisional_dest.iterdir())
+        except OSError:
+            occupied = False
+    if occupied:
+        logger.warning("%s: its provisional extraction directory %s already "
+                       "holds content, left by an earlier run over this "
+                       "workspace; the two are mixed there, with no further "
+                       "warning.", local_path, provisional_dest)
+        _record(report, PROVISIONAL_DIRECTORY_ALREADY_OCCUPIED, local_path,
+                level=0, digest=digest_hex)
+
+    logger.info("Extracting archive: %s", local_path)
+    try:
+        extract_archive(local_path, provisional_dest, report=report,
+                        location=local_path.name)
+    except Exception as exc:
+        _record(report, getattr(exc, "code", EXTRACTION_FAILED), local_path,
+                level=0, detail=str(exc), digest=digest_hex)
+        raise
+    # THE WINDOW: the same instant `flatten_nested_archives` records for a
+    # nested container -- the last moment the archive still exists on disk.
+    _record(report, INPUT_CONTAINER_OPENED, local_path, level=0,
+            digest=digest_hex)
+    try:
+        local_path.unlink()
+    except FileNotFoundError:
+        # Already gone: external interference, not a removal failure. The
+        # extraction above already succeeded, so the rename below still runs.
+        pass
+    except OSError as exc:
+        logger.warning("%s was extracted successfully but could not be "
+                       "removed (%s): the archive is kept, and its content "
+                       "stays under the provisional name %s. Its content IS "
+                       "in the extracted tree.", local_path, exc,
+                       provisional_dest)
+        _record(report, ARCHIVE_KEPT_AFTER_SUCCESSFUL_EXTRACTION, local_path,
+                level=0, detail=str(exc), digest=digest_hex)
+        return provisional_dest
+    try:
+        # `final_dest.exists()` checked FIRST, exactly as the nested dance
+        # does: POSIX replaces an empty directory silently on `rename()`,
+        # Windows raises -- checking first makes an occupied `final_dest`
+        # behave the same, declared way on both.
+        if final_dest.exists():
+            raise OSError(f"a directory or file already exists at {final_dest}")
+        provisional_dest.rename(final_dest)
+    except OSError as exc:
+        logger.warning("%s: the extracted content could not be renamed to "
+                       "%s (%s): it stays under its provisional name %s. Its "
+                       "content IS in the extracted tree, under that name.",
+                       local_path, final_dest, exc, provisional_dest)
+        _record(report, EXTRACTION_KEPT_UNDER_PROVISIONAL_NAME, local_path,
+                level=0, detail=str(exc))
+        return provisional_dest
+    return final_dest
+
+
 def prepare_source(source: str, workspace: Path | None = None,
-                   report: ExtractionReport | None = None) -> PreparedSource:
+                   report: ExtractionReport | None = None, *,
+                   replace: bool = False,
+                   no_archive_dir: bool = False) -> PreparedSource:
     """
     Resolve a source in the 3 possible cases and always return a directory ready
     to be walked, together with the NATURE of the resolved unit and the SHA-256
@@ -1648,10 +1838,23 @@ def prepare_source(source: str, workspace: Path | None = None,
     when it has no meaning: a directory is not a single file, there is nothing to
     hash.
 
-    `workspace` is the directory the archive is unpacked under; the tree returned
-    is `workspace / EXTRACTED_TREE_NAME`. When it is not given, a temporary directory is
-    created and NEVER removed -- the caller owns it. A caller that runs
-    repeatedly should pass a workspace it manages itself.
+    `workspace` is the directory the archive is unpacked under; the tree
+    returned is `resolve_extraction_root(source, workspace, replace=replace,
+    no_archive_dir=no_archive_dir)` -- by default `workspace / <the archive's
+    own name, verbatim>` (story 14.8, AC-1). When `workspace` is not given, a
+    temporary directory is created and NEVER removed -- the caller owns it. A
+    caller that runs repeatedly should pass a workspace it manages itself.
+
+    `replace` and `no_archive_dir` select the other two modes (mutually
+    exclusive; `unboxr.cli` enforces that and their own preconditions --
+    `replace` takes no `workspace` at all, neither is honoured when `source`
+    is already a directory -- before this function is ever called; this
+    function itself prescribes no usage error, being a library):
+      - `replace=True` extracts the archive IN PLACE and removes it: the
+        final tree occupies the archive's own path. Refused upstream for a
+        URL and for a directory source.
+      - `no_archive_dir=True` extracts straight into `workspace`, with no
+        directory named after the archive created beneath it.
 
     THE REPORT COMES BACK BY THE RETURN VALUE, AND MAY ALSO BE PASSED IN. The
     two are not redundant, and neither replaces the other:
@@ -1670,11 +1873,18 @@ def prepare_source(source: str, workspace: Path | None = None,
     cannot be omitted" is meant literally -- a field has a name. The three
     existing pieces keep exactly their meaning.
     """
-    workspace = workspace or Path(tempfile.mkdtemp(prefix="prepared_source_"))
+    from_url = is_url(source)
+    if replace:
+        # `--replace` never takes a workspace (`unboxr.cli` refuses one
+        # upstream): the archive's own parent stands in for it, exactly as
+        # `resolve_extraction_root` already assumes for this mode.
+        workspace = Path(source).parent
+    else:
+        workspace = workspace or Path(tempfile.mkdtemp(prefix="prepared_source_"))
     if report is None:
         report = new_report()
 
-    if is_url(source):
+    if from_url:
         local_path = download_source(source, workspace)
     else:
         local_path = Path(source)
@@ -1737,43 +1947,91 @@ def prepare_source(source: str, workspace: Path | None = None,
     digest_hex = _sha256_digest_of_file(local_path)
     logger.info("SHA-256 digest of the input: sha256:%s", digest_hex)
 
-    destination = workspace / EXTRACTED_TREE_NAME
-    # The same collision guard `flatten_nested_archives` applies to its nested
-    # destinations, applied to the FIRST-level one. Without it the guard existed
-    # only below the top: a caller that reuses a workspace -- the case this
-    # function's own docstring names -- poured a second extraction into the
-    # first one with no trace at all. Verified in code review on 9 September
-    # 2026. Same rule as below: state what is OBSERVED, never a cause.
-    if destination.is_dir():
+    target = resolve_extraction_root(source, workspace, replace=replace,
+                                     no_archive_dir=no_archive_dir)
+
+    # THE ARCHIVE OCCUPIES ITS OWN TARGET PATH, STRUCTURALLY, in exactly two
+    # cases (story 14.8, AC-5): `--replace` (`target` IS `local_path`, by
+    # definition of `resolve_extraction_root`), and a URL under the DEFAULT
+    # mode (`download_source` wrote `local_path` at `workspace /
+    # resolve_archive_name(source)`, which is what `target` already computes
+    # to). Both go through the same provisional-name-then-rename dance
+    # `flatten_nested_archives` already performs for a nested archive, reused
+    # rather than reinvented, and the archive is CONSUMED in both.
+    #
+    # `replace or (from_url and not no_archive_dir)` NAMES those two cases --
+    # deliberately NOT `target == local_path`, which happens to hold in a
+    # THIRD case too: a local archive, no `--replace`, whose DESTINATION is
+    # its own parent directory. There the collision is an ACCIDENT of the
+    # caller's own arguments, not a structural certainty, and the archive was
+    # never offered up to be consumed. `unboxr.cli` refuses that case
+    # upstream instead (AC-2 / AC-5.3) before `prepare_source` is ever
+    # called; this function does not render it impossible for a direct
+    # library call that bypassed the refusal -- consistent with the rest of
+    # this function, which prescribes no usage error, being a library.
+    if replace or (from_url and not no_archive_dir):
+        destination = _extract_replacing_archive_with_its_own_content(
+            local_path, workspace, report=report, digest_hex=digest_hex)
+    else:
+        destination = target
+        # The same collision guard `flatten_nested_archives` applies to its
+        # nested destinations, applied to the FIRST-level one. Without it the
+        # guard existed only below the top: a caller that reuses a workspace
+        # -- the case this function's own docstring names -- poured a second
+        # extraction into the first one with no trace at all. Verified in
+        # code review on 9 September 2026. Same rule as below: state what is
+        # OBSERVED, never a cause.
+        if destination.is_dir():
+            try:
+                already_occupied = any(destination.iterdir())
+            except OSError:
+                already_occupied = False
+            if already_occupied:
+                logger.warning("Destination %s already holds content; "
+                               "extracting into it merges the two, with no "
+                               "further warning.", destination)
+                # NO DIGEST: `destination` is a DIRECTORY. Condensing a tree
+                # walk into a value that reads like a file digest would
+                # attest something else entirely.
+                _record(report, DESTINATION_ALREADY_OCCUPIED, destination,
+                        level=0)
+        logger.info("Extracting archive: %s", local_path)
+        # THE FIRST-LEVEL CONTAINER IS EXTRACTED OUTSIDE THE FLATTENING LOOP,
+        # so neither the record of its opening nor the record of its failure
+        # can come from there. Without this `try`, the single most visible
+        # amputation of a run -- the source the caller named -- reached no
+        # report at all.
         try:
-            already_occupied = any(destination.iterdir())
-        except OSError:
-            already_occupied = False
-        if already_occupied:
-            logger.warning("Destination %s already holds content; extracting "
-                           "into it merges the two, with no further warning.",
-                           destination)
-            # NO DIGEST: `destination` is a DIRECTORY. Condensing a tree
-            # walk into a value that reads like a file digest would attest
-            # something else entirely.
-            _record(report, DESTINATION_ALREADY_OCCUPIED, destination, level=0)
-    logger.info("Extracting archive: %s", local_path)
-    # THE FIRST-LEVEL CONTAINER IS EXTRACTED OUTSIDE THE FLATTENING LOOP, so
-    # neither the record of its opening nor the record of its failure can come
-    # from there. Without this `try`, the single most visible amputation of a
-    # run -- the source the caller named -- reached no report at all.
-    try:
-        extract_archive(local_path, destination, report=report,
-                        location=local_path.name)
-    except Exception as exc:
-        # REUSED, never recomputed: `digest_hex` was taken a few lines above
-        # on these very bytes, at the one point both origins converge.
-        _record(report, getattr(exc, "code", EXTRACTION_FAILED), local_path,
-                level=0, detail=str(exc), digest=digest_hex)
-        raise
-    # Reused as well: same file, same bytes, digest already in hand.
-    _record(report, INPUT_CONTAINER_OPENED, local_path, level=0,
-            digest=digest_hex)
+            extract_archive(local_path, destination, report=report,
+                            location=local_path.name)
+        except Exception as exc:
+            # REUSED, never recomputed: `digest_hex` was taken a few lines
+            # above on these very bytes, at the one point both origins
+            # converge.
+            _record(report, getattr(exc, "code", EXTRACTION_FAILED), local_path,
+                    level=0, detail=str(exc), digest=digest_hex)
+            raise
+        # Reused as well: same file, same bytes, digest already in hand.
+        _record(report, INPUT_CONTAINER_OPENED, local_path, level=0,
+                digest=digest_hex)
+        # A URL, still lingering as a plain file inside `destination` under
+        # `no_archive_dir` (its path there IS `target`'s own parent, unlike
+        # the default mode where it IS `target`): consumed here too, so
+        # `flatten_nested_archives` below never re-discovers it as a nested
+        # archive of itself, and so `destination` ends up holding only the
+        # tree (story 14.8, D-C) even though there was no rename dance to
+        # fold this into.
+        if from_url and no_archive_dir:
+            try:
+                local_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.warning("The downloaded copy %s could not be removed "
+                               "(%s): it stays alongside the extracted tree "
+                               "in %s.", local_path, exc, destination)
+                _record(report, DOWNLOADED_COPY_KEPT_ALONGSIDE_THE_TREE,
+                        local_path, level=0, detail=str(exc), digest=digest_hex)
     logger.info("Looking for nested archives (recursive flattening)...")
     flatten_nested_archives(destination, report=report)
     return PreparedSource(tree=destination, nature=nature, digest=digest_hex,

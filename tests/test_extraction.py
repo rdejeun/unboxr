@@ -959,5 +959,156 @@ class TestTheProvisionalName(_Bench):
         self.assertTrue((root / "pkg.zip" / "code" / "aes.c").is_file())
 
 
+# ---------------------------------------------------------------------------
+# Level 0, story 14.8: the three modes `prepare_source` now offers, and the
+# single point (`resolve_extraction_root`) that computes where each one lands
+# -- reused by `unboxr.cli` rather than recomputed there (AC-1.4).
+# ---------------------------------------------------------------------------
+class TestLevelZeroThreeModes(_Bench):
+
+    def test_resolve_extraction_root_is_the_single_point_for_all_three_modes(self):
+        """AC-1.4. Touches no file system: a caller deciding where the tree
+        will land must be able to ask before the archive, or even the
+        destination, exists."""
+        workspace = self.dir / "out"
+        self.assertEqual(workspace / "toto.jar",
+                         ux.resolve_extraction_root("toto.jar", workspace))
+        self.assertEqual(workspace,
+                         ux.resolve_extraction_root("toto.jar", workspace,
+                                                    no_archive_dir=True))
+        self.assertEqual(Path("toto.jar"),
+                         ux.resolve_extraction_root("toto.jar", workspace,
+                                                    replace=True))
+        # `replace=True` ignores `workspace` entirely -- consistent with
+        # `unboxr.cli` refusing DESTINATION alongside `--replace` (AC-3.2).
+        self.assertEqual(Path("toto.jar"),
+                         ux.resolve_extraction_root("toto.jar", None,
+                                                    replace=True))
+
+    def test_resolve_archive_name_does_not_touch_the_network_for_a_url(self):
+        """The same rule `download_source` applies internally, repeated
+        rather than reinvented, so a caller can learn the name BEFORE
+        downloading anything."""
+        self.assertEqual(
+            "pkg.tar.gz",
+            ux.resolve_archive_name("https://example.invalid/dir/pkg.tar.gz"))
+        self.assertEqual(
+            "downloaded_archive",
+            ux.resolve_archive_name("https://example.invalid/"))
+        self.assertEqual("toto.jar", ux.resolve_archive_name("toto.jar"))
+
+    def test_the_default_mode_names_the_root_after_the_archive(self):
+        """AC-1: the retired `extracted` is gone, the root now carries the
+        archive's own name, verbatim."""
+        archive = self._zip("pkg.zip")
+        prepared = ux.prepare_source(str(archive), workspace=self.dir / "out")
+
+        self.assertEqual(self.dir / "out" / "pkg.zip", prepared.tree)
+        self.assertTrue((prepared.tree / "code" / "aes.c").is_file())
+
+    def test_no_archive_dir_extracts_straight_into_the_workspace(self):
+        """AC-4.1: no wrapper directory, the tree IS the workspace itself."""
+        archive = self._zip("pkg.zip")
+        workspace = self.dir / "out"
+        prepared = ux.prepare_source(str(archive), workspace=workspace,
+                                     no_archive_dir=True)
+
+        self.assertEqual(workspace, prepared.tree)
+        self.assertTrue((workspace / "code" / "aes.c").is_file())
+
+    def test_replace_extracts_in_place_and_removes_the_archive(self):
+        """AC-3.1: the archive becomes its own directory, on the same path --
+        exactly what `unboxr` already does to a nested archive, reused here
+        rather than reinvented (AC-5)."""
+        archive = self._zip("pkg.zip")
+
+        prepared = ux.prepare_source(str(archive), replace=True)
+
+        self.assertEqual(archive, prepared.tree)
+        self.assertTrue((archive / "code" / "aes.c").is_file())
+        self.assertFalse(archive.is_file(),
+                         "the archive must be gone: it was replaced by its "
+                         "own extracted content")
+
+    def test_replace_never_removes_the_archive_on_a_failed_extraction(self):
+        """AC-3.6, and the mutation-critical half of it: the archive is
+        removed ONLY after a successful extraction. Reproduced BEFORE the
+        correction existed by reading the code path -- `extract_archive`
+        raises before `local_path.unlink()` is ever reached -- and validated
+        here by observing the archive survive a genuine failure."""
+        broken = self.dir / "broken.zip"
+        broken.write_bytes(b"PK\x03\x04 truncated, not a zip at all")
+
+        with self.assertRaises(Exception):
+            ux.prepare_source(str(broken), replace=True)
+
+        self.assertTrue(broken.is_file(),
+                        "a failed extraction must leave the archive in place")
+
+    def test_replace_falls_back_to_the_provisional_name_when_the_rename_fails(self):
+        """The SAME non-guarantee the nested case already carries (AC-5.4):
+        the tree returned is the one ACTUALLY obtained, not the one that was
+        intended, when the rename onto the archive's own vacated path fails."""
+        archive = self._zip("pkg.zip")
+        provisional = self.dir / ux._provisional_name_at_level_zero(archive)
+
+        def refuse_rename(self, *args, **kwargs):
+            raise OSError("rename refused by the file system")
+
+        with mock.patch.object(Path, "rename", refuse_rename):
+            prepared = ux.prepare_source(str(archive), replace=True)
+
+        self.assertEqual(provisional, prepared.tree)
+        self.assertTrue((provisional / "code" / "aes.c").is_file())
+        self.assertFalse(archive.exists(),
+                         "the archive was already removed before the rename "
+                         "was attempted")
+
+    def test_a_url_under_the_default_mode_consumes_the_downloaded_copy(self):
+        """AC-5.2 (D-C): the destination the default mode targets IS, by
+        construction, the exact path `download_source` just wrote the
+        archive to -- so it is consumed the same way a nested archive is,
+        and DESTINATION ends up holding only the tree."""
+        workspace = self.dir / "out"
+
+        def fake_download(source, dest_dir):
+            return self._zip_at_dir(dest_dir, "pkg.zip")
+
+        with mock.patch.object(ux, "download_source", fake_download):
+            prepared = ux.prepare_source("https://example.invalid/pkg.zip",
+                                         workspace=workspace)
+
+        self.assertEqual(workspace / "pkg.zip", prepared.tree)
+        self.assertTrue((prepared.tree / "code" / "aes.c").is_file())
+        self.assertEqual(["pkg.zip"],
+                         [p.name for p in workspace.iterdir()],
+                         "the downloaded copy must not linger beside the tree")
+
+    def test_a_url_under_no_archive_dir_also_consumes_the_downloaded_copy(self):
+        """The same consumption, in the mode where there is no rename dance
+        to fold it into: extracted directly into the workspace, then the
+        download is removed so it is not re-discovered as a nested archive
+        of itself."""
+        workspace = self.dir / "out"
+
+        def fake_download(source, dest_dir):
+            return self._zip_at_dir(dest_dir, "pkg.zip")
+
+        with mock.patch.object(ux, "download_source", fake_download):
+            prepared = ux.prepare_source("https://example.invalid/pkg.zip",
+                                         workspace=workspace, no_archive_dir=True)
+
+        self.assertEqual(workspace, prepared.tree)
+        self.assertTrue((workspace / "code" / "aes.c").is_file())
+        self.assertFalse((workspace / "pkg.zip").exists())
+
+    def _zip_at_dir(self, dest_dir: Path, name: str) -> Path:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        path = dest_dir / name
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("code/aes.c", "int a;")
+        return path
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

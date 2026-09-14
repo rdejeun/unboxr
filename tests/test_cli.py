@@ -30,6 +30,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from unittest import mock
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -105,9 +106,11 @@ class TestEntryPointAndSurface(_CommandBench):
         listed = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", out))
         # `--sbom` writes the extraction document; `--linked-bom` says which
         # other BOM that document belongs to, and has no meaning without it.
-        # The surface is asserted as a COMPLETE set precisely so that one more
-        # cannot slip in unnoticed.
+        # `--replace` and `--no-archive-dir` are the two other extraction
+        # modes story 14.8 added. The surface is asserted as a COMPLETE set
+        # precisely so that one more cannot slip in unnoticed.
         self.assertEqual({"--verbose", "--quiet", "--sbom", "--linked-bom",
+                          "--replace", "--no-archive-dir",
                           "--version", "--help"}, listed)
         short = set(re.findall(r"(?<![\w-])-[a-z](?![\w-])", out))
         self.assertEqual({"-v", "-q", "-h"}, short)
@@ -127,9 +130,22 @@ class TestEntryPointAndSurface(_CommandBench):
         code, _, _ = self._run([str(archive), str(self.dir / "d"), "-v", "-q"])
         self.assertEqual(2, code, "a usage error returns 2")
 
-    def test_a_missing_argument_is_a_usage_error(self):
-        code, _, _ = self._run(["only-one-argument"])
+    def test_a_missing_destination_is_a_usage_error_unless_replace_is_given(self):
+        """`destination` became OPTIONAL the day `--replace` needed an
+        invocation that has no object for it (story 14.8, AC-3.2): what
+        "missing" means no longer follows from the positional alone, it
+        follows from the combination with `--replace`. Still a usage error,
+        still code 2 -- the definition of "missing" changed, not the fact
+        that omitting it is refused."""
+        code, _, err = self._run(["only-one-argument"])
         self.assertEqual(2, code)
+        self.assertIn("destination", err)
+
+    def test_an_archive_alone_is_a_valid_invocation_only_under_replace(self):
+        archive = self._zip("p.zip", [("a.txt", "a")])
+        code, out, _ = self._run(["--replace", str(archive)])
+        self.assertEqual(0, code)
+        self.assertEqual(archive, Path(out.strip()))
 
     def test_the_floor_is_declared_and_says_what_was_added_to_it(self):
         """Declared, so that later work adds to a STATED floor rather than
@@ -185,7 +201,7 @@ class TestExtractionThroughTheCommand(_CommandBench):
         code, out, _ = self._run([str(archive), str(destination)])
         self.assertEqual(0, code)
         tree = Path(out.strip())
-        self.assertEqual(destination / "extracted", tree)
+        self.assertEqual(destination / "p.zip", tree)
         self.assertTrue((tree / "pkg" / "a.txt").is_file())
 
     def test_an_extraction_failure_returns_one(self):
@@ -201,17 +217,48 @@ class TestExtractionThroughTheCommand(_CommandBench):
         self.assertEqual(1, code)
         self.assertIn("FileNotFoundError", err)
 
-    def test_a_non_empty_destination_is_refused_rather_than_overwritten(self):
+    def test_a_non_empty_destination_is_refused_under_no_archive_dir(self):
+        """AC-4.2 keeps the OLDER rule under `--no-archive-dir`, where the
+        extracted tree IS DESTINATION: it must be empty or absent."""
         archive = self._zip("p.zip", [("a.txt", "a")])
         destination = self.dir / "busy"
         destination.mkdir()
         (destination / "precious.txt").write_text("keep me", encoding="utf-8")
 
-        code, _, err = self._run([str(archive), str(destination)])
+        code, _, err = self._run([str(archive), str(destination),
+                                  "--no-archive-dir"])
         self.assertEqual(2, code)
         self.assertIn("not empty", err)
         self.assertEqual("keep me",
                          (destination / "precious.txt").read_text(encoding="utf-8"))
+
+    def test_a_non_empty_destination_is_accepted_in_the_default_mode(self):
+        """AC-2.4: the new contract claims a NAME inside DESTINATION, not the
+        whole directory -- `unboxr toto.jar /tmp` is now a valid invocation
+        even when DESTINATION holds other things, as long as it does not
+        already hold a path named after the archive."""
+        archive = self._zip("p.zip", [("a.txt", "a")])
+        destination = self.dir / "busy"
+        destination.mkdir()
+        (destination / "precious.txt").write_text("keep me", encoding="utf-8")
+
+        code, out, _ = self._run([str(archive), str(destination)])
+        self.assertEqual(0, code)
+        self.assertEqual(destination / "p.zip", Path(out.strip()))
+        self.assertEqual("keep me",
+                         (destination / "precious.txt").read_text(encoding="utf-8"))
+
+    def test_an_already_occupied_target_is_refused_in_the_default_mode(self):
+        """AC-2.1/AC-2.2: the refusal is on the SPECIFIC target already
+        existing, never on DESTINATION being merely non-empty."""
+        archive = self._zip("p.zip", [("a.txt", "a")])
+        destination = self.dir / "out"
+        (destination / "p.zip").mkdir(parents=True)
+
+        code, _, err = self._run([str(archive), str(destination)])
+        self.assertEqual(2, code)
+        self.assertIn(str(destination / "p.zip"), err)
+        self.assertIn("already exists", err)
 
     def test_a_destination_that_is_a_file_is_refused(self):
         archive = self._zip("p.zip", [("a.txt", "a")])
@@ -227,16 +274,23 @@ class TestExtractionThroughTheCommand(_CommandBench):
         download happens."""
         seen = {}
 
-        def fake_prepare(source, workspace=None, report=None):
+        def fake_prepare(source, workspace=None, report=None, replace=False,
+                         no_archive_dir=False):
             seen["source"] = source
             seen["workspace"] = workspace
             seen["report"] = report
-            (workspace / "extracted").mkdir(parents=True)
+            # REPRODUCES the real name computation (`resolve_archive_name`),
+            # rather than the retired literal "extracted": a fake that
+            # invented its own name would stop exercising what `cli.main`
+            # actually prints on `stdout`.
+            name = Path(urlparse(source).path).name or "downloaded_archive"
+            tree = workspace / name
+            tree.mkdir(parents=True)
             # `PreparedSource` imported by name, not read off the module: the
             # parameter above is called `report` because the real signature
             # calls it that, and it shadows the module inside this function.
             return PreparedSource(
-                tree=workspace / "extracted", nature="undetermined",
+                tree=tree, nature="undetermined",
                 digest="0" * 64, report=report)
 
         with mock.patch.object(cli, "prepare_source", fake_prepare):
@@ -257,6 +311,104 @@ class TestExtractionThroughTheCommand(_CommandBench):
                         side_effect=AssertionError("the command must not mkdtemp")):
             code, _, _ = self._run([str(archive), str(self.dir / "out")])
         self.assertEqual(0, code)
+
+
+class TestTheThreeExtractionModes(_CommandBench):
+    """Story 14.8: the default, `--replace` and `--no-archive-dir` modes, and
+    the refusals AC-2/AC-3/AC-4/AC-5 attach to them."""
+
+    def test_replace_extracts_in_place_and_removes_the_archive(self):
+        """AC-3.1, end to end through the command line."""
+        archive = self._zip("p.zip", [("a.txt", "a")])
+        code, out, _ = self._run(["--replace", str(archive)])
+        self.assertEqual(0, code)
+        self.assertEqual(archive, Path(out.strip()))
+        self.assertTrue((archive / "a.txt").is_file())
+        self.assertFalse(archive.is_file())
+
+    def test_replace_refuses_a_destination(self):
+        """AC-3.2: a usage error, not a silently ignored argument."""
+        archive = self._zip("p.zip", [("a.txt", "a")])
+        code, _, err = self._run(["--replace", str(archive), str(self.dir / "out")])
+        self.assertEqual(2, code)
+        self.assertIn("DESTINATION is not accepted with --replace", err)
+        self.assertTrue(archive.is_file(), "nothing may be touched before the refusal")
+
+    def test_replace_refuses_a_url(self):
+        """AC-3.3: there is no local file to replace."""
+        code, _, err = self._run(["--replace", "https://example.invalid/p.zip"])
+        self.assertEqual(2, code)
+        self.assertIn("--replace is refused on a URL", err)
+
+    def test_replace_refuses_a_directory_source(self):
+        """AC-3.4 / D-D: `prepare_source` extracts nothing on this branch --
+        there is no archive for `--replace` to consume."""
+        source = self.dir / "given"
+        source.mkdir()
+        (source / "a.txt").write_text("a", encoding="utf-8")
+        code, _, err = self._run(["--replace", str(source)])
+        self.assertEqual(2, code)
+        self.assertIn("already a directory", err)
+        self.assertTrue((source / "a.txt").is_file(), "nothing may be touched")
+
+    def test_no_archive_dir_refuses_a_directory_source(self):
+        """AC-4.5 / D-D, the same refusal for the other mode."""
+        source = self.dir / "given"
+        source.mkdir()
+        code, _, err = self._run([str(source), str(self.dir / "out"),
+                                  "--no-archive-dir"])
+        self.assertEqual(2, code)
+        self.assertIn("already a directory", err)
+
+    def test_replace_and_no_archive_dir_are_refused_together(self):
+        """AC-3.5, enforced by `build_parser`'s own mutually exclusive group."""
+        archive = self._zip("p.zip", [("a.txt", "a")])
+        code, _, _ = self._run(["--replace", "--no-archive-dir", str(archive)])
+        self.assertEqual(2, code, "a usage error returns 2")
+
+    def test_a_local_archive_colliding_with_its_own_destination_is_refused(self):
+        """AC-2.3 / AC-5.3: DESTINATION is the archive's own parent directory,
+        so the default target IS the archive itself. The archive is a local
+        file the caller did not ask to consume, so this is AC-2's existence
+        refusal, not the provisional-name dance -- and the message names
+        `--replace` as the only way out."""
+        archive = self._zip("p.zip", [("a.txt", "a")])
+        code, _, err = self._run([str(archive), str(self.dir)])
+        self.assertEqual(2, code)
+        self.assertIn("is the archive itself", err)
+        self.assertIn("--replace", err)
+        self.assertTrue(archive.is_file(), "nothing may be touched")
+
+    def test_replace_resolves_the_collision_the_default_mode_refuses(self):
+        """The other half of the same scenario: `--replace` is exactly the
+        way out AC-2.3 names."""
+        archive = self._zip("p.zip", [("a.txt", "a")])
+        code, out, _ = self._run(["--replace", str(archive)])
+        self.assertEqual(0, code)
+        self.assertEqual(archive, Path(out.strip()))
+
+    def test_replace_refuses_an_sbom_path_inside_the_tree_it_will_become(self):
+        """AC-8.5, the third mode: under `--replace` the tree IS the
+        archive's own path, so `--sbom` pointing inside it is refused the
+        same way, with nothing extracted and the archive left untouched."""
+        archive = self._zip("p.zip", [("a.txt", "a")])
+        code, _, err = self._run(["--replace", str(archive),
+                                  "--sbom", str(archive / "sbom.json")])
+        self.assertEqual(2, code)
+        self.assertIn("inside the tree it inventories", err)
+        self.assertTrue(archive.is_file(), "nothing may be touched before the refusal")
+
+    def test_no_archive_dir_writes_no_sbom_anywhere_under_destination(self):
+        """AC-4.3: under this mode the tree IS DESTINATION, so no path under
+        it is left "beside" the tree the way `DESTINATION/sbom.json` is in
+        the default mode."""
+        archive = self._zip("p.zip", [("a.txt", "a")])
+        destination = self.dir / "out"
+        code, _, err = self._run([
+            str(archive), str(destination), "--no-archive-dir",
+            "--sbom", str(destination / "sbom.json")])
+        self.assertEqual(2, code)
+        self.assertIn("inside the tree it inventories", err)
 
 
 class TestAmputationsAreNeverHidden(_CommandBench):
@@ -305,13 +457,16 @@ class TestAmputationsAreNeverHidden(_CommandBench):
         self.assertEqual(
             set(), set(report.NOT_AN_AMPUTATION.values()) - warnings,
             "NOT_AN_AMPUTATION names a message the module no longer emits")
-        # The arithmetic the two tables have to keep adding up to. Twelve
+        # The arithmetic the two tables have to keep adding up to. Thirteen
         # warnings: five amputations at warning level -- the sixth, the office
-        # container, is an `info` -- and seven declared non-amputations.
-        self.assertEqual(12, len(warnings))
+        # container, is an `info` -- and eight declared non-amputations. The
+        # eighth was added by story 14.8 (crypto-scan, upstream):
+        # `downloaded_copy_kept_alongside_the_tree`, filed when a URL's
+        # download cannot be removed under `--no-archive-dir`.
+        self.assertEqual(13, len(warnings))
         self.assertEqual(
             5, len(set(report.AMPUTATION_MESSAGES.values()) & warnings))
-        self.assertEqual(7, len(report.NOT_AN_AMPUTATION))
+        self.assertEqual(8, len(report.NOT_AN_AMPUTATION))
 
     def test_the_six_amputations_are_named_and_really_emitted_by_the_module(self):
         """The counter matches on the exact format strings of the module. This

@@ -27,7 +27,6 @@ from .extraction import (
     CATEGORIES_NEEDING_SEVEN_ZIP,
     CATEGORY_BY_EXT,
     CATEGORY_IF_NOT_A_TAR,
-    EXTRACTED_TREE_NAME,
     NATIVE_TAR_MODES,
     NATURE_BY_EXTENSION,
     NOT_EXTRACTED_EXTENSIONS,
@@ -51,7 +50,9 @@ from .extraction import (
     new_report,
     prepare_source,
     probe_capability_profile,
+    resolve_archive_name,
     resolve_distribution_nature,
+    resolve_extraction_root,
     UnsupportedFormatError,
 )
 from .report import (
@@ -98,7 +99,22 @@ from .sbom import (
 # schema does not perform. ADDITIONS again -- a document produced without the
 # new option is byte-for-byte what the previous version produced -- so a MINOR
 # version.
-__version__ = "1.2.0"
+# 2.0.0: the level-0 extraction root stopped being the fixed name `extracted`
+# and started obeying the SAME rule the determinism contract already stated
+# for a nested archive -- its own name, verbatim (story 14.8 of the upstream
+# project, crypto-scan). That is a CHANGE OF SHAPE, not an addition: every
+# caller of `prepare_source`, and every invocation of the command line, gets a
+# tree at a DIFFERENT path than before, with nothing to opt into or out of.
+# `EXTRACTED_TREE_NAME`, a published name in `__all__`, is REMOVED rather than
+# deprecated -- the value it named no longer exists to be pointed at. Two
+# command-line options are ADDED to name the other two modes (`--replace`,
+# `--no-archive-dir`), which on their own would be a minor release; it is the
+# breaking change to the default that decides the major, exactly as it did
+# for 1.0.0's change of arity. "Nobody consumes this package yet" was already
+# true at 1.0.0 and was explicitly not the reason for its major either: the
+# reason, both times, is that the version block stays a readable ledger of
+# what changed shape and what only grew.
+__version__ = "2.0.0"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
@@ -136,7 +152,6 @@ __all__ = [
     "CATEGORIES_NEEDING_SEVEN_ZIP",
     "CATEGORY_BY_EXT",
     "CATEGORY_IF_NOT_A_TAR",
-    "EXTRACTED_TREE_NAME",
     "NATIVE_TAR_MODES",
     "NATURE_BY_EXTENSION",
     "NOT_EXTRACTED_EXTENSIONS",
@@ -165,5 +180,7 @@ __all__ = [
     "flatten_nested_archives",
     # End-to-end entry point
     "prepare_source",
+    "resolve_archive_name",
     "resolve_distribution_nature",
+    "resolve_extraction_root",
 ]

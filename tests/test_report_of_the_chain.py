@@ -84,7 +84,7 @@ class TestTheReportIsReturned(_Bench):
         archive = self._zip_at(self.dir / "pkg.whl")
         prepared = ux.prepare_source(str(archive), workspace=self.dir / "ws")
 
-        self.assertEqual(self.dir / "ws" / "extracted", prepared.tree)
+        self.assertEqual(self.dir / "ws" / "pkg.whl", prepared.tree)
         self.assertEqual("built", prepared.nature)
         self.assertEqual(64, len(prepared.digest))
         self.assertNotIn(":", prepared.digest)
@@ -596,12 +596,19 @@ class TestWhatThisInstrumentationDidNotChange(_Bench):
         and a report that quietly changed how loud the chain is would be a
         second change hiding behind the first.
 
-        Twenty-one sites, nine informational and twelve warnings, asserted in
+        Story 14.8 (crypto-scan, upstream) is the one exception on record: it
+        gave level 0 its own provisional-name-then-rename dance, reused from
+        `flatten_nested_archives` rather than reinvented, plus the removal of
+        a URL's downloaded copy under `--no-archive-dir` -- five new sites,
+        one informational and four warnings, all NAMED here rather than left
+        for this test to silently absorb.
+
+        Twenty-six sites, ten informational and sixteen warnings, asserted in
         this body rather than engraved in the name of the test."""
         calls = self._logging_calls()
-        self.assertEqual(21, len(calls))
-        self.assertEqual(9, calls.count("info"))
-        self.assertEqual(12, calls.count("warning"))
+        self.assertEqual(26, len(calls))
+        self.assertEqual(10, calls.count("info"))
+        self.assertEqual(16, calls.count("warning"))
 
     def test_recording_never_becomes_what_amputates_the_corpus(self):
         """A guard must never be the thing that shortens the corpus. If the

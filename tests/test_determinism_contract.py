@@ -69,6 +69,12 @@ DECLARED_NON_GUARANTEES = (
     # matter of remembering to. The clause that stays TRUE is held here
     # instead, so the next rewrite goes red rather than silent.
     "opens nothing to look inside",
+    # Added by story 14.8 of the upstream project (crypto-scan): the level-0
+    # extraction root is now named after the archive, exactly as a nested
+    # one already was, and inherits the SAME non-guarantee guarantee 2(a)
+    # already carried for that final name -- extended down to level 0, not
+    # invented.
+    "extraction root is a valid path component",
 )
 
 
@@ -335,8 +341,8 @@ class TestTheWrittenContract(unittest.TestCase):
         cls.docstring = _flatten(ux.__doc__ or "")
         cls.readme = _flatten((REPO_ROOT / "README.md").read_text(encoding="utf-8"))
 
-    def test_the_eight_non_guarantees_are_written_in_the_module(self):
-        self.assertEqual(8, len(DECLARED_NON_GUARANTEES),
+    def test_the_nine_non_guarantees_are_written_in_the_module(self):
+        self.assertEqual(9, len(DECLARED_NON_GUARANTEES),
                          "the count is part of what this file asserts: update "
                          "the name of this test and the docstring above with it")
         for fragment in DECLARED_NON_GUARANTEES:

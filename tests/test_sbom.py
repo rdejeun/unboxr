@@ -207,8 +207,8 @@ class TestTheChainFillsInTheDigests(_Bench):
         to hash, and fabricating a digest of a tree walk would attest something
         else entirely."""
         destination = self.dir / "w"
-        (destination / "extracted").mkdir(parents=True)
-        (destination / "extracted" / "left-over.txt").write_text("x")
+        (destination / "p.zip").mkdir(parents=True)
+        (destination / "p.zip" / "left-over.txt").write_text("x")
         archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
 
         prepared = ux.prepare_source(str(archive), workspace=destination)
@@ -1069,7 +1069,7 @@ class TestTheCommandWritesTheDocument(_CommandBench):
         code, out, _ = self._run([str(archive), str(self.dir / "d")])
         self.assertEqual(0, code)
         self.assertEqual([], list(self.dir.glob("*.json")))
-        self.assertTrue(out.strip().endswith("extracted"))
+        self.assertTrue(out.strip().endswith("p.zip"))
 
     def test_the_document_goes_to_the_file_and_never_into_stdout(self):
         """`stdout` stays reserved for the path of the extracted tree -- the
@@ -1177,7 +1177,7 @@ class TestTheCommandRefusesAnUnusableOutputPath(_CommandBench):
 
         code, _, err = self._run([
             str(archive), str(destination),
-            "--sbom", str(destination / "extracted" / "sbom.json")])
+            "--sbom", str(destination / "p.zip" / "sbom.json")])
 
         self.assertEqual(2, code)
         self.assertIn("inside the tree it inventories", err)
@@ -1269,7 +1269,7 @@ class TestTheCommandRefusesAnUnusableOutputPath(_CommandBench):
         strings would be defeated by the simplest of them."""
         archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
         destination = self.dir / "d"
-        disguised = destination / "extracted" / ".." / "extracted" / "sbom.json"
+        disguised = destination / "p.zip" / ".." / "p.zip" / "sbom.json"
 
         code, _, err = self._run([str(archive), str(destination),
                                   "--sbom", str(disguised)])
@@ -1331,7 +1331,7 @@ class TestTheCommandRefusesAnUnusableOutputPath(_CommandBench):
         self.assertEqual(1, code)
         self.assertIn("could not be written", err)
         self.assertIn("the disk filled up", err)
-        self.assertTrue(out.strip().endswith("extracted"),
+        self.assertTrue(out.strip().endswith("p.zip"),
                         "the extraction is not lost because a write failed")
 
 
@@ -1343,15 +1343,28 @@ class TestADirectoryPathIsNeverCalledAFile(_Bench):
         one `file` would be a false statement in a document meant as evidence;
         it is typed `data`, the one value that asserts a collection rather than
         a single file or a piece of software. What actually tells it apart is
-        `unboxr:digestState`, which says `not_a_file` and is always emitted."""
+        `unboxr:digestState`, which says `not_a_file` and is always emitted.
+
+        `--no-archive-dir` is used here (rather than the default mode) so the
+        occupied directory is named after the WORKSPACE ("w"), never after
+        the archive ("p.zip") the way the default mode's target now is
+        (story 14.8): the two would otherwise carry the very same bare name,
+        and `_component` -- exactly one match by name -- could no longer
+        isolate the directory-typed component this test exists to check from
+        the archive's own file-typed one."""
         destination = self.dir / "w"
-        (destination / "extracted").mkdir(parents=True)
-        (destination / "extracted" / "left-over.txt").write_text("x")
+        destination.mkdir(parents=True)
+        (destination / "left-over.txt").write_text("x")
         archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
 
-        _, document = self._document_of(archive, workspace=destination)
+        prepared = ux.prepare_source(str(archive), workspace=destination,
+                                     no_archive_dir=True)
+        document = sb.build_document(prepared.report, prepared.tree,
+                                     source=str(archive),
+                                     source_digest=prepared.digest,
+                                     source_kind=sb.SOURCE_IS_ARCHIVE)
 
-        component = self._component(document, "extracted")
+        component = self._component(document, "w")
         self.assertEqual(sb.TYPE_NOT_A_FILE, component["type"])
         self.assertNotEqual(sb.TYPE_FILE, component["type"])
         self.assertNotIn("hashes", component)
@@ -2017,7 +2030,7 @@ class TestTheCommandLinksTheDocument(_CommandBench):
 
         code, _, err = self._run([
             str(archive), str(destination),
-            "--sbom", str(destination / "extracted" / "sbom.json"),
+            "--sbom", str(destination / "p.zip" / "sbom.json"),
             "--linked-bom", "urn:cdx:not-a-uuid/1"])
 
         self.assertEqual(2, code)

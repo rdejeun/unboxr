@@ -44,7 +44,7 @@ from pathlib import Path
 
 from . import __version__
 from . import sbom
-from .extraction import EXTRACTED_TREE_NAME, is_url, new_report, prepare_source
+from .extraction import is_url, new_report, prepare_source, resolve_extraction_root
 from .report import AMPUTATION_MESSAGES, ORACLE_REMINDER_SENTENCE, text_for
 
 # COMPOSED on the one constant, never retyped: the sentence itself lives in
@@ -105,8 +105,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "destination",
         type=Path,
-        help="Directory to unpack under. It must be empty or absent; the "
-             "extracted tree is created in DESTINATION/extracted.",
+        nargs="?",
+        default=None,
+        help="Directory to unpack under. Required, except with --replace. "
+             "By default the extracted tree is created at "
+             "DESTINATION/<archive name>, verbatim -- not DESTINATION "
+             "itself: it may hold other things. See below for the other "
+             "two modes.",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--replace", action="store_true",
+        help="Extract the archive in place and replace it with its own "
+             "content: no DESTINATION is accepted with this option. The "
+             "archive is removed only after a successful extraction. "
+             "Refused on a URL, and when the source is already a directory.",
+    )
+    mode.add_argument(
+        "--no-archive-dir", action="store_true",
+        help="Do not create the directory named after the archive; unpack "
+             "straight into DESTINATION. DESTINATION must then be empty or "
+             "absent, and no --sbom path under it is acceptable any more: "
+             "the extracted tree IS DESTINATION. Refused when the source is "
+             "already a directory.",
     )
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument(
@@ -187,22 +208,26 @@ def _resolved(path: Path):
         return None
 
 
-def _inventoried_tree(archive: str, destination: Path):
+def _inventoried_tree(archive: str, destination: Path | None, *,
+                      replace: bool, no_archive_dir: bool):
     """The directory the document will claim to have inventoried in full, or
     `None` when even that cannot be decided.
 
     TWO BRANCHES. A source that is already a directory is walked WHERE IT IS --
     nothing is extracted -- so the tree is the user's own directory. Anything
-    else is unpacked, and the tree is the one place `prepare_source` creates.
-    A URL is never a local directory, and is not probed as one.
+    else is unpacked, and the tree is wherever `resolve_extraction_root`
+    says `prepare_source` will create it, in ANY of the three modes -- the
+    SAME function `prepare_source` itself calls (story 14.8, AC-1.4): two
+    independent computations of that path is exactly how `EXTRACTED_TREE_NAME`
+    and this function's own former `destination / EXTRACTED_TREE_NAME` used
+    to stay in step only because the value never varied. A URL is never a
+    local directory, and is not probed as one.
 
     A FAILED PROBE IS DECLARED, never silently read as "not a directory" --
     the same discipline `_resolved` above applies to its own failure. Treating
     an unreadable `archive` as if it were an archive-style source would let
-    the containment check below run against the WRONG tree (`destination /
-    "extracted"`, which may not even be where this source's content will
-    land), switching the refusal off without saying so. Reviewed in story
-    14.4.
+    the containment check below run against the WRONG tree, switching the
+    refusal off without saying so. Reviewed in story 14.4.
     """
     if not is_url(archive):
         candidate = Path(archive)
@@ -212,11 +237,56 @@ def _inventoried_tree(archive: str, destination: Path):
             return None
         if is_directory:
             return candidate
-    return destination / EXTRACTED_TREE_NAME
+    return resolve_extraction_root(archive, destination, replace=replace,
+                                   no_archive_dir=no_archive_dir)
 
 
-def check_document_path(parser, archive: str, destination: Path,
-                        document_path) -> None:
+def check_extraction_target(parser, archive: str, destination: Path | None, *,
+                            replace: bool, no_archive_dir: bool) -> None:
+    """Refuse an already-occupied extraction target NOW, before anything runs
+    (story 14.8, AC-2).
+
+    ONLY THE DEFAULT MODE IS CHECKED HERE. `--no-archive-dir` keeps its own,
+    older rule -- DESTINATION must be empty or absent -- checked in `main`
+    where it always has been (AC-4.2). `--replace` has nothing to check here
+    at all: the archive occupying its own future path is not a collision to
+    refuse, it is the whole point of the option (AC-3.1), and
+    `resolve_extraction_root` makes that path the archive's own by
+    definition.
+
+    THE REFUSAL IS ON EXISTENCE, NOT ON BEING NON-EMPTY (AC-2.2) -- the
+    opposite rule from `--no-archive-dir`, and deliberately so: at the level
+    of the archive's own name, `unboxr` claims a name that belongs to nobody
+    yet, not a directory it is willing to add to. DESTINATION itself may
+    hold other things (AC-2.4).
+
+    ONE SPECIAL CASE NAMES ITS OWN CAUSE (AC-5.3, AC-2.3): when what already
+    holds that name IS the archive itself -- a local archive whose
+    DESTINATION happens to be its own parent directory -- `--replace` is
+    named as the way out, because it is the only one: nothing else changes
+    what path the archive would occupy.
+    """
+    if replace or no_archive_dir or destination is None:
+        return
+    target = resolve_extraction_root(archive, destination, replace=False,
+                                     no_archive_dir=False)
+    resolved_target = _resolved(target)
+    if resolved_target is None or not resolved_target.exists():
+        return
+    if not is_url(archive):
+        resolved_archive = _resolved(Path(archive))
+        if resolved_archive is not None and resolved_target == resolved_archive:
+            parser.error(
+                f"{target} is the archive itself: pass --replace to extract "
+                f"it in place, or choose a DESTINATION that does not already "
+                f"hold a path of that name")
+    parser.error(f"{target} already exists: unboxr will not write into a "
+                f"path that is already taken")
+
+
+def check_document_path(parser, archive: str, destination: Path | None,
+                        document_path, *, replace: bool = False,
+                        no_archive_dir: bool = False) -> None:
     """Refuse an unusable output path NOW, before anything is extracted.
 
     A long extraction thrown away at the final write would look like work that
@@ -232,9 +302,11 @@ def check_document_path(parser, archive: str, destination: Path,
     file present when the extraction finished -- false at the very moment it is
     written, and a file whose content carries its own digest does not exist.
     The refused perimeter is the TREE, never the whole destination:
-    `<destination>/sbom.json`, beside `extracted/`, stays allowed. Comparison
-    is on RESOLVED paths, never on strings: two spellings of one path, or a
-    link pointing into the tree, name the same target.
+    `<destination>/sbom.json`, beside the tree, stays allowed in the default
+    mode -- under `--no-archive-dir` the tree IS the whole destination, so
+    nothing under it is left to stay allowed (AC-4.3). Comparison is on
+    RESOLVED paths, never on strings: two spellings of one path, or a link
+    pointing into the tree, name the same target.
 
     TWO MORE TARGETS NAME SOMETHING THAT WOULD STOP EXISTING THE INSTANT THE
     DOCUMENT IS WRITTEN, for the same underlying reason as the tree itself,
@@ -255,7 +327,8 @@ def check_document_path(parser, archive: str, destination: Path,
     # cause that is not the real one: the caller would go and create the
     # directory, and be refused again. A refusal states the reason that
     # actually applies.
-    tree = _inventoried_tree(archive, destination)
+    tree = _inventoried_tree(archive, destination, replace=replace,
+                             no_archive_dir=no_archive_dir)
     resolved_document = _resolved(document_path)
     resolved_tree = _resolved(tree) if tree is not None else None
     if resolved_document is None or resolved_tree is None:
@@ -276,11 +349,15 @@ def check_document_path(parser, archive: str, destination: Path,
                 f"file whose content carries its own SHA-256 digest does not "
                 f"exist")
 
-    resolved_destination = _resolved(destination)
-    if resolved_destination is not None and resolved_document == resolved_destination:
-        parser.error(
-            f"--sbom is the destination directory ({destination}), not a "
-            f"file inside it: for example {destination / 'sbom.json'}")
+    # DESTINATION HAS NO VALUE UNDER `--replace` (AC-3.2 forbids it), so this
+    # refusal has no object there: the tree-containment check above already
+    # covers the equivalent case, since `tree` IS the archive's own path.
+    if destination is not None:
+        resolved_destination = _resolved(destination)
+        if resolved_destination is not None and resolved_document == resolved_destination:
+            parser.error(
+                f"--sbom is the destination directory ({destination}), not a "
+                f"file inside it: for example {destination / 'sbom.json'}")
 
     if document_path.is_dir():
         parser.error(f"--sbom is a directory, not a file: {document_path}")
@@ -351,13 +428,57 @@ def main(argv: list[str] | None = None) -> int:
     # touching the file system at all. See `check_linked_bom`.
     check_linked_bom(parser, args.linked_bom, args.sbom)
 
-    destination: Path = args.destination
-    if destination.exists() and not destination.is_dir():
-        parser.error(f"destination is not a directory: {destination}")
-    if destination.is_dir() and any(destination.iterdir()):
-        parser.error(f"destination exists and is not empty: {destination}")
+    # DECIDABLE FROM argv ALONE, next: the shape of the invocation itself,
+    # before a single path on disk is looked at (story 14.8, AC-2/AC-3/AC-4).
+    # `--replace` and `--no-archive-dir` being mutually exclusive is already
+    # enforced by `build_parser`'s own argument group.
+    if args.replace and args.destination is not None:
+        parser.error("DESTINATION is not accepted with --replace: the "
+                     "archive is extracted in place, on its own path (AC-3.2)")
+    if not args.replace and args.destination is None:
+        parser.error("the following arguments are required: destination "
+                     "(omit it only together with --replace)")
+
+    is_source_url = is_url(args.archive)
+    if args.replace and is_source_url:
+        parser.error("--replace is refused on a URL: there is no local "
+                     "file to replace (AC-3.3)")
+
+    # A SOURCE THAT IS ALREADY A DIRECTORY has neither an archive to replace
+    # nor a wrapper directory to omit: `prepare_source` extracts nothing on
+    # this branch (D-D). Both options are refused here, with their cause,
+    # rather than silently accepted and ignored (AC-3.4, AC-4.5).
+    source_is_directory = False
+    if not is_source_url:
+        try:
+            source_is_directory = Path(args.archive).is_dir()
+        except OSError:
+            source_is_directory = False
+    if source_is_directory and (args.replace or args.no_archive_dir):
+        used = "--replace" if args.replace else "--no-archive-dir"
+        parser.error(f"{used} has no effect when the source is already a "
+                     f"directory: it is inventoried where it is, and "
+                     f"nothing is extracted")
+
+    destination: Path | None = args.destination
+    if destination is not None:
+        if destination.exists() and not destination.is_dir():
+            parser.error(f"destination is not a directory: {destination}")
+        # NON-EMPTY IS REFUSED ONLY UNDER `--no-archive-dir` (AC-4.2). The
+        # default mode drops this rule (AC-2.4): DESTINATION may hold other
+        # things now that `unboxr` only claims a name inside it, not the
+        # whole directory. `check_extraction_target`, below, checks THAT
+        # name instead.
+        if args.no_archive_dir and destination.is_dir() and any(destination.iterdir()):
+            parser.error(f"destination exists and is not empty: {destination}")
+
+    check_extraction_target(parser, args.archive, destination,
+                            replace=args.replace,
+                            no_archive_dir=args.no_archive_dir)
+
     # BEFORE ANY EXTRACTION, and before a single byte is written anywhere.
-    check_document_path(parser, args.archive, destination, args.sbom)
+    check_document_path(parser, args.archive, destination, args.sbom,
+                        replace=args.replace, no_archive_dir=args.no_archive_dir)
 
     configure_logging(args.verbose, args.quiet)
     logger = logging.getLogger("unboxr.cli")
@@ -370,7 +491,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         prepared = prepare_source(args.archive, workspace=destination,
-                                  report=report)
+                                  report=report, replace=args.replace,
+                                  no_archive_dir=args.no_archive_dir)
     except Exception as exc:
         logger.error("%s: %s", exc.__class__.__name__, exc)
         # `summarise` too, on this path, not just the numeric reminder: this

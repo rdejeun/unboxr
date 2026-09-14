@@ -62,11 +62,14 @@ class TestTheVocabularyOfCauses(unittest.TestCase):
                 self.assertIn(kind, report.KINDS)
 
     def test_the_count_of_causes_is_asserted_here_and_not_in_a_test_name(self):
-        """A figure engraved in a test name never goes red, it lies. Eighteen
-        causes: 6 amputations already named by the command, 7 declared
-        non-amputations, the corpus widening, and the 4 this story adds -- two
-        containers opened, two refusals for want of a capability."""
-        self.assertEqual(18, len(report.CAUSE_TEXTS))
+        """A figure engraved in a test name never goes red, it lies.
+        Nineteen causes: 6 amputations already named by the command, 8
+        declared non-amputations (the eighth,
+        `downloaded_copy_kept_alongside_the_tree`, added by story 14.8 of the
+        upstream project, crypto-scan), the corpus widening, and the 4 an
+        earlier story added -- two containers opened, two refusals for want
+        of a capability."""
+        self.assertEqual(19, len(report.CAUSE_TEXTS))
         self.assertEqual(8, sum(1 for kind in report.CAUSE_KINDS.values()
                                 if kind == report.NOT_OPENED))
 
@@ -81,10 +84,11 @@ class TestTheVocabularyOfCauses(unittest.TestCase):
                 self.assertIn(" ", prose, "the original key was English prose")
 
     def test_the_two_logging_tables_keep_their_cardinals(self):
-        """Moved from the command, not rewritten: six amputations, seven
-        declared non-amputations, one widening message."""
+        """Moved from the command, not rewritten: six amputations, eight
+        declared non-amputations (story 14.8 of the upstream project,
+        crypto-scan, added the eighth), one widening message."""
         self.assertEqual(6, len(report.AMPUTATION_MESSAGES))
-        self.assertEqual(7, len(report.NOT_AN_AMPUTATION))
+        self.assertEqual(8, len(report.NOT_AN_AMPUTATION))
         self.assertTrue(report.CORPUS_WIDENING_MESSAGE)
         for code in report.AMPUTATION_MESSAGES:
             with self.subTest(code=code):
