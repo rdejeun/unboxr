@@ -1101,6 +1101,12 @@ class TestLevelZeroThreeModes(_Bench):
         self.assertEqual(workspace, prepared.tree)
         self.assertTrue((workspace / "code" / "aes.c").is_file())
         self.assertFalse((workspace / "pkg.zip").exists())
+        # The downloaded copy sitting alone in `workspace` before extraction
+        # must never be mistaken for pre-existing content: a fresh run must
+        # report nothing at all. Code review, 15 September 2026 -- reproduced
+        # by reverting the fix, this assertion went red on a spurious
+        # `DESTINATION_ALREADY_OCCUPIED` entry.
+        self.assertEqual([], prepared.report.still_in_tree)
 
     def _zip_at_dir(self, dest_dir: Path, name: str) -> Path:
         dest_dir.mkdir(parents=True, exist_ok=True)

@@ -268,8 +268,14 @@ def check_extraction_target(parser, archive: str, destination: Path | None, *,
     """
     if replace or no_archive_dir or destination is None:
         return
-    target = resolve_extraction_root(archive, destination, replace=False,
-                                     no_archive_dir=False)
+    # `replace` and `no_archive_dir` are threaded through rather than
+    # hard-coded `False`: the guard above already guarantees both are `False`
+    # here, but stating that as a literal duplicates the guard's own
+    # precondition -- exactly the kind of independent computation this
+    # story's AC-1.4 warns drifts silently the day the guard above changes.
+    # Code review, 15 September 2026.
+    target = resolve_extraction_root(archive, destination, replace=replace,
+                                     no_archive_dir=no_archive_dir)
     resolved_target = _resolved(target)
     if resolved_target is None or not resolved_target.exists():
         return
@@ -280,6 +286,7 @@ def check_extraction_target(parser, archive: str, destination: Path | None, *,
                 f"{target} is the archive itself: pass --replace to extract "
                 f"it in place, or choose a DESTINATION that does not already "
                 f"hold a path of that name")
+            return
     parser.error(f"{target} already exists: unboxr will not write into a "
                 f"path that is already taken")
 

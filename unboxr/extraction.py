@@ -693,7 +693,13 @@ def download_source(url: str, dest_dir: Path) -> Path:
             f"({exc.__class__.__name__}: {exc}). It exists but is not a usable "
             f"directory, or it cannot be created."
         ) from exc
-    file_name = Path(urlparse(url).path).name or "downloaded_archive"
+    # REUSES `resolve_archive_name`, never reimplements it: the two computed
+    # the same rule independently until code review on 15 September 2026 --
+    # exactly the kind of drift AC-1.4 (story 14.8) warns a name computed in
+    # two places will eventually suffer. `resolve_extraction_root`'s own
+    # default-mode target depends on this name matching where the file is
+    # actually written, for every URL under the default mode.
+    file_name = resolve_archive_name(url)
     local_path = dest_dir / file_name
     logger.info("Downloading from: %s", url)
     try:
@@ -1672,15 +1678,23 @@ def resolve_archive_name(source: str) -> str:
     downloading a URL to find out.
 
     A local archive keeps its own file name. A URL never touches the network
-    here: the rule is the one `download_source` already applies internally --
-    the last segment of the URL's path, or `"downloaded_archive"` when it
-    gives none -- REPEATED, not reinvented, so a caller deciding where the
-    tree will land (`unboxr.cli`, refusing an unusable `--sbom` path before
-    anything is extracted) does not have to download first to learn it.
+    here: it is the last segment of the URL's path, or `"downloaded_archive"`
+    when it gives none. `download_source` calls THIS function rather than
+    recomputing the rule, so a caller deciding where the tree will land
+    (`unboxr.cli`, refusing an unusable `--sbom` path before anything is
+    extracted) does not have to download first to learn it, and the two can
+    never drift apart the way `EXTRACTED_TREE_NAME`'s own two independent
+    computations once did.
+
+    The local branch falls back the same way as the URL branch does, for a
+    source whose own name component is empty (code review, 15 September
+    2026) -- a defensive floor: nothing observed today reaches it, since a
+    source resolving to an empty name is a directory in every case measured,
+    and a directory source never calls this function at all.
     """
     if is_url(source):
         return Path(urlparse(source).path).name or "downloaded_archive"
-    return Path(source).name
+    return Path(source).name or "unnamed_archive"
 
 
 def resolve_extraction_root(source: str, workspace: Path | None, *,
@@ -1717,7 +1731,7 @@ def resolve_extraction_root(source: str, workspace: Path | None, *,
 
 
 def _extract_replacing_archive_with_its_own_content(
-        local_path: Path, workspace: Path, *, report, digest_hex: str) -> Path:
+        local_path: Path, *, report, digest_hex: str) -> Path:
     """
     Extract `local_path` under a provisional name, remove the archive, then
     rename the extraction onto the path the archive itself just vacated --
@@ -1971,7 +1985,7 @@ def prepare_source(source: str, workspace: Path | None = None,
     # this function, which prescribes no usage error, being a library.
     if replace or (from_url and not no_archive_dir):
         destination = _extract_replacing_archive_with_its_own_content(
-            local_path, workspace, report=report, digest_hex=digest_hex)
+            local_path, report=report, digest_hex=digest_hex)
     else:
         destination = target
         # The same collision guard `flatten_nested_archives` applies to its
@@ -1981,9 +1995,20 @@ def prepare_source(source: str, workspace: Path | None = None,
         # extraction into the first one with no trace at all. Verified in
         # code review on 9 September 2026. Same rule as below: state what is
         # OBSERVED, never a cause.
+        #
+        # `local_path` IS EXCLUDED FROM THE COUNT under `--no-archive-dir` for
+        # a URL: `download_source`, a few lines above, has already written the
+        # downloaded copy straight into `destination` (`no_archive_dir` makes
+        # `target` -- and so `destination` -- `workspace` itself), so a run
+        # that has touched nothing yet would otherwise see its own
+        # just-downloaded file and misreport it as pre-existing content
+        # (false `DESTINATION_ALREADY_OCCUPIED`, on every single such run).
+        # Code review, 15 September 2026.
         if destination.is_dir():
             try:
-                already_occupied = any(destination.iterdir())
+                already_occupied = any(p for p in destination.iterdir()
+                                       if not (from_url and no_archive_dir
+                                               and p == local_path))
             except OSError:
                 already_occupied = False
             if already_occupied:

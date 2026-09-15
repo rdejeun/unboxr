@@ -288,7 +288,10 @@ class TestPackagingBoundary(unittest.TestCase):
         # nothing to opt into. That is a change of SHAPE to the default
         # behaviour, not an addition, so a major version -- even though two
         # new options (`--replace`, `--no-archive-dir`) ship alongside it.
-        self.assertEqual("2.0.0", unboxr.__version__)
+        # 2.0.1 is six correctness fixes from the adversarial code review of
+        # 2.0.0 (15 September 2026): no public signature and no observable
+        # shape changed on a correct run, so a PATCH version.
+        self.assertEqual("2.0.1", unboxr.__version__)
         source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("importlib.metadata", source)
 

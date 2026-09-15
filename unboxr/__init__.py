@@ -114,7 +114,21 @@ from .sbom import (
 # true at 1.0.0 and was explicitly not the reason for its major either: the
 # reason, both times, is that the version block stays a readable ledger of
 # what changed shape and what only grew.
-__version__ = "2.0.0"
+# 2.0.1: six internal correctness fixes found in adversarial code review of
+# 2.0.0 (15 September 2026), none of which touches a public signature or the
+# shape of what any caller observes on a correct run: a false
+# `DESTINATION_ALREADY_OCCUPIED` report entry fired on every single URL +
+# `--no-archive-dir` run (the just-downloaded copy was counted against
+# itself); the URL naming rule was computed twice, independently, in
+# `resolve_archive_name` and `download_source` -- now the latter calls the
+# former; `resolve_archive_name`'s local branch gained the same empty-name
+# fallback its URL branch already had; `_extract_replacing_archive_with_
+# its_own_content`, a private function, lost a parameter it never read;
+# `check_extraction_target` threads `replace`/`no_archive_dir` through
+# instead of a literal `False` duplicating its own guard, and its second
+# `parser.error` no longer falls through unconditionally. A PATCH version:
+# nothing that existed changed shape, and nothing was added.
+__version__ = "2.0.1"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
