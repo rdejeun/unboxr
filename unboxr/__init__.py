@@ -180,7 +180,49 @@ from .sbom import (
 # stopped saying "same values" one sentence after announcing that the
 # timestamp changed. A PATCH version: no public signature moved, and no
 # document this package builds comes out differently.
-__version__ = "2.1.1"
+# 2.2.0: the command can say what THIS machine opens. `--list-formats`
+# projects the extension tables onto FOUR states -- opened by the standard
+# library, delegated to a 7-Zip binary, recognised and refused, recognised and
+# deliberately not opened -- with `--json` for the same thing in a shape a
+# consumer can read, and the projection itself
+# (`extraction.project_format_support`) computes every count from the tables at
+# the moment of the call. FOUR STATES AND NOT TWO is the substance of the
+# entry: a two-column listing has nowhere to put the Zstandard extensions and
+# no column at all for the office containers, and a listing that dropped the
+# delegated extensions on a machine without the binary would assert unboxr does
+# not know them.
+# A MINOR version: no public signature moved, no document changed a byte, and
+# no archive that was extracted before is extracted differently.
+# WHAT IS NOT PURE ADDITION -- THREE THINGS, written down rather than glossed
+# over, because the first draft of this entry claimed "no existing invocation
+# produces a different result" and the third item below is a counter-example.
+# (a) `archive` became an optional positional, so argparse no longer writes
+# "the following arguments are required: archive" itself -- `main` writes it,
+# in argparse's own words with the new condition appended. Same code 2, same
+# refusal, a longer sentence. It is the same move `destination` made at 2.0.0.
+# (b) The USAGE LINE of `--help` changed with it: `[archive]` is advertised
+# optional unconditionally, where it read as mandatory before. A one-line
+# usage cannot say "optional only with --list-formats"; the option's own help
+# text says it, and `main` enforces it.
+# (c) AND THE ONE THAT IS A BEHAVIOURAL REGRESSION ON AN INVOCATION THAT
+# WORKED: `--l` and `--li` were valid abbreviations of `--linked-bom` and now
+# exit 2 with "ambiguous option", because argparse's prefix matching finds
+# `--list-formats` as well. Measured on 15 September 2026. It is the whole
+# reason the sentence "no existing invocation produces a different result"
+# does not appear in this entry.
+# WHAT WAS NOT DONE ABOUT IT, AND WHY. The option keeps its name: it was
+# chosen deliberately, and renaming a documented option to protect an
+# abbreviation that was never documented trades a real name for a shadow one.
+# `allow_abbrev=False` was rejected too -- it would kill EVERY abbreviation of
+# every option at once, which is a far wider break than the two this costs.
+# `--link`, `--linked` and the full `--linked-bom` are unaffected, and the
+# ambiguity is now pinned by a test so that it is a declared fact rather than
+# a surprise met in the field.
+# NOTHING IS EXPORTED. `project_format_support` and the state names are read
+# by `unboxr.cli` straight from `unboxr.extraction`; neither `__all__` nor the
+# imports above grew, because adding a name to the published surface is a
+# decision of its own and this release did not need one.
+__version__ = "2.2.0"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 

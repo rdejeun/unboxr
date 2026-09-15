@@ -388,9 +388,10 @@ class CapabilityProfile:
     two are not the same fact.
 
     `recognised_extensions` and `extensions_needing_seven_zip` are COMPUTED from
-    the extension table, never written as literals: the same discipline the
-    README already applies, where a one-liner counts them rather than a figure
-    that would drift.
+    the extension table, never written as literals: the same discipline
+    `unboxr --list-formats` applies to the listing it prints, and the README to
+    the counts it quotes -- counted where they are read, rather than typed out
+    once and left to drift.
 
     No guarantee on the corpus when the 7-Zip binary is absent. The profile
     DECLARES that divergence -- two machines, one archive, two corpora -- it

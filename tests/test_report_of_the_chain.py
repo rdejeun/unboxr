@@ -538,8 +538,9 @@ class TestTheCapabilityProfileOfThisMachine(_Bench):
 
     def test_the_counts_of_the_profile_are_computed_from_the_table(self):
         """Sixty-eight recognised extensions and thirty-one needing 7-Zip on
-        the day this was written. Neither figure is written here: the README
-        already chose a counting one-liner over a number that would drift."""
+        the day this was written. Neither figure is written here: this package
+        counts them where they are read -- in this profile, and in the listing
+        `unboxr --list-formats` prints -- rather than typing them out."""
         profile = ux.probe_capability_profile()
         self.assertEqual(len(ux.CATEGORY_BY_EXT), profile.recognised_extensions)
         self.assertEqual(

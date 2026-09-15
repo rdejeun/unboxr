@@ -98,9 +98,10 @@ WHAT THE CONTRACT DOES NOT GUARANTEE
   has no notion of them.
 - No guarantee on any document a consumer builds downstream from the extracted
   tree.
-- No guarantee on the corpus when the 7-Zip binary is absent. README.md gives
-  the one-liner that counts how many of the recognised extensions need it,
-  rather than a figure that would drift.
+- No guarantee on the corpus when the 7-Zip binary is absent. How many of the
+  recognised extensions need it is COUNTED on the machine that asks --
+  `unboxr --list-formats`, or `project_format_support()` under it -- rather
+  than written down anywhere as a figure that would drift.
 - No guarantee that the tree produced is identical to the one produced before
   the tar security filter was made mandatory: the filter refuses archives that
   earlier versions extracted. In exchange the behaviour is now stable from one
@@ -1631,6 +1632,112 @@ def _sha256_digest_of_file(path: Path) -> str:
 # once (`NOT_EXTRACTED_EXTENSIONS`). Verified in code review, story 14.3.
 CATEGORIES_NEEDING_SEVEN_ZIP = ("external_7zip", "tar_7z")
 
+# The `CATEGORY_BY_EXT` categories that are RECOGNISED AND REFUSED. The format
+# is in the table precisely so that the chain refuses it OUT LOUD rather than
+# ignoring it, and no machine opens it: not one with 7-Zip installed -- the
+# official binary does not handle Zstandard either -- and not one running a
+# newer Python, since `compression.zstd` would need code that does not exist
+# here. Named once, next to the tuple above and for the same reason: a literal
+# repeated at every site that needs the same set is a second source of truth,
+# which this project has already paid for.
+#
+# THE DAY A CATEGORY IS ADDED THAT NOTHING OPENS, IT GOES HERE. Leaving it out
+# no longer files it under a favourable state in silence -- see
+# `CATEGORIES_OPENED_BY_THE_STANDARD_LIBRARY` below and the anomaly it makes
+# possible -- but it still has to go here for the listing to say anything true
+# about it.
+CATEGORIES_REFUSED = ("zstd_unsupported",)
+
+# The `CATEGORY_BY_EXT` categories the STANDARD LIBRARY opens on its own: no
+# binary, no dependency, nothing to install, the same answer on every machine.
+#
+# WHY THIS TUPLE EXISTS AT ALL, when the two above could have been complemented
+# to get it. Because that complement WAS the defect. `project_format_support`
+# used to file every category belonging to neither of the two tuples above
+# under this state through a bare `else:`, which made the FAVOURABLE state the
+# fall-through default of the projection. MEASURED in code review on
+# 15 September 2026: adding `".lz4": "lz4_unsupported"` to `CATEGORY_BY_EXT`
+# WITH a correct dispatch branch raising `UnsupportedFormatError`, and
+# forgetting `CATEGORIES_REFUSED`, left the entire test suite green and made
+# the listing print `.lz4` under "opened here and on every machine" -- telling a
+# caller, to their face, that a format works where the extraction raises.
+#
+# THE RULE THIS TUPLE ENFORCES, and the reason a third list is cheaper than the
+# bug it closes: membership in each state is read from a POSITIVE list, and a
+# category belonging to NONE of the three is a NAMED ANOMALY
+# (`UnclassifiedCategoryError`), never a classification by elimination. A
+# forgotten category now stops the listing with the category's own name in the
+# message, at the first run, instead of being announced as openable everywhere.
+# The alternative -- keeping the `else:` and adding a test that enumerates the
+# categories -- was rejected: it puts the enumeration in the suite rather than
+# in the code, so the code would still be wrong and only the test would know.
+CATEGORIES_OPENED_BY_THE_STANDARD_LIBRARY = (
+    "zip",
+    "tar_plain", "tar_gz", "tar_bz2", "tar_xz", "tar_lzma",
+    "plain_gzip", "plain_lzma", "plain_xz", "plain_bz2",
+)
+
+
+class UnclassifiedCategoryError(ValueError):
+    """The projection met something the three category lists do not cover.
+
+    TWO FAULTS, ONE CLASS, and both are faults of the TABLES rather than of any
+    input a caller supplies -- which is why neither degrades into a listing
+    that prints anyway:
+
+      - a `CATEGORY_BY_EXT` category in none of `CATEGORIES_NEEDING_SEVEN_ZIP`,
+        `CATEGORIES_REFUSED` and `CATEGORIES_OPENED_BY_THE_STANDARD_LIBRARY`.
+        Printing it under any of the four states would assert something about
+        it that nobody wrote down;
+      - an extension that reaches two states at once, which is the only way the
+        two tables can stop being disjoint. The totals would still add up --
+        both the per-state counts and the sum over them move together -- so
+        nothing arithmetic would notice.
+
+    A SUBCLASS of `ValueError`, deliberately: this says "the data handed to this
+    projection is not something it can classify", which is what `ValueError`
+    means, and a caller already guarding against bad tables keeps catching it.
+    """
+
+
+# The four states every recognised extension is sorted into by
+# `project_format_support`.
+#
+# FOUR, AND NEVER TWO. A listing with an "opened" column and a "not opened" one
+# has nowhere to put the Zstandard extensions: under "opened" it promises an
+# extraction that raises, under "not opened" it reads as "install something"
+# for a format no installation fixes. And it has no column at all for the
+# containers this package recognises and CHOOSES not to open, which would then
+# be absent from the listing altogether -- absent from a listing is not read as
+# "unknown", it is read as "unrecognised". An omission asserts.
+#
+# The names are the keys of the machine-readable rendering, so they are written
+# for a consumer to match on, not for prose: `unboxr.cli` holds the headings a
+# human reads, and this module holds no English sentence a renderer would have
+# to reuse.
+STATE_OPENED_BY_THE_STANDARD_LIBRARY = "opened_by_the_standard_library"
+STATE_DELEGATED_TO_SEVEN_ZIP = "delegated_to_seven_zip"
+STATE_RECOGNISED_AND_REFUSED = "recognised_and_refused"
+STATE_RECOGNISED_AND_NOT_OPENED = "recognised_and_not_opened"
+
+# Declared as a tuple, in the order a reader should meet them, because the
+# rendering iterates THIS rather than the keys of a dictionary it built: a
+# state that stopped being produced would then vanish from the listing without
+# a word, which is the failure mode the four states exist to prevent.
+FORMAT_SUPPORT_STATES = (
+    STATE_OPENED_BY_THE_STANDARD_LIBRARY,
+    STATE_DELEGATED_TO_SEVEN_ZIP,
+    STATE_RECOGNISED_AND_REFUSED,
+    STATE_RECOGNISED_AND_NOT_OPENED,
+)
+
+# The one state whose answer is a property of the MACHINE and not of this
+# package. Written down rather than inferred from `openable_here` being false,
+# because the two are not the same question and a consumer that conflated them
+# would advise installing 7-Zip to open a `.zst` -- which no installation of
+# anything will ever do.
+_STATE_DEPENDS_ON_THE_MACHINE = STATE_DELEGATED_TO_SEVEN_ZIP
+
 
 def probe_capability_profile() -> CapabilityProfile:
     """What this machine can open, MEASURED once and declared in every report.
@@ -1648,8 +1755,10 @@ def probe_capability_profile() -> CapabilityProfile:
     add a second source of truth for one `shutil.which`.
 
     The two counts are COMPUTED from the extension table, never written as
-    literals -- the same discipline the README already applies, where a
-    one-liner counts them rather than a figure that would drift.
+    literals -- the same discipline `project_format_support` applies to the
+    listing the command prints, and the README to the counts it quotes: not
+    one of them is a figure typed out, because a typed figure drifts in
+    silence.
 
     NOTHING HERE PROBES THE TAR FILTER, and that is not an oversight: the
     declared Python floor makes the filter unconditional, so there is no
@@ -1662,6 +1771,151 @@ def probe_capability_profile() -> CapabilityProfile:
             1 for category in CATEGORY_BY_EXT.values()
             if category in CATEGORIES_NEEDING_SEVEN_ZIP),
     )
+
+
+def project_format_support() -> dict:
+    """What THIS machine does with every extension this package recognises.
+
+    A PROJECTION AND NOTHING ELSE. Every extension, every count and every total
+    below is read or derived, at the moment of the call, from `CATEGORY_BY_EXT`,
+    `CATEGORIES_NEEDING_SEVEN_ZIP`, `CATEGORIES_REFUSED`,
+    `CATEGORIES_OPENED_BY_THE_STANDARD_LIBRARY` and
+    `NOT_EXTRACTED_EXTENSIONS`. Not one figure is written as a literal -- the
+    discipline `probe_capability_profile` already applies to the two counts
+    it declares in every report, and the one the README applies by sending a
+    reader to this listing instead of quoting a number at them. A figure
+    typed once is a figure that drifts the day an extension is added, and it
+    drifts in SILENCE.
+
+    IT LIVES HERE BECAUSE THE TABLES DO. `unboxr.cli` renders what this returns
+    and nothing more. A projection written in the command would be a second
+    reading of these same tables, to disagree with this one the first time a
+    format is added -- exactly how `EXTRACTED_TREE_NAME` and its two
+    independent computations stayed in step only for as long as the value never
+    varied.
+
+    PURE, EXCEPT FOR THE ONE MEASUREMENT THE ANSWER DEPENDS ON. The presence of
+    a 7-Zip binary is MEASURED, by the same `find_7zip_binary()` every
+    extraction uses: one `shutil.which` sweep -- plus, on Windows, a look at the
+    default install locations -- no archive opened, no network reached, nothing
+    written anywhere. And its absence is NAMED (`seven_zip_binary` is `None`,
+    and the delegated state carries `openable_here: False`), never expressed as
+    a shorter list: the delegated extensions stay in the listing on a machine
+    that cannot open a single one of them, because dropping them would assert
+    they are not recognised at all.
+
+    THE STATES PARTITION, AND THAT IS CHECKED HERE RATHER THAN HOPED FOR. Every
+    key of `CATEGORY_BY_EXT` lands in exactly one of the first three states,
+    each read from its OWN positive list; a category in none of them raises
+    `UnclassifiedCategoryError` instead of falling through into the favourable
+    one. And `NOT_EXTRACTED_EXTENSIONS` has to be disjoint from
+    `CATEGORY_BY_EXT` for the fourth state to be a state and not an annotation,
+    so an extension reaching two states raises the same anomaly. Both checks
+    are here, in the code, and not only in the suite: a projection that can
+    only be wrong in a way its own tests would catch is still a projection that
+    ships wrong.
+
+    THE LISTING IS ABOUT NAMES. An extension is what a file DECLARES itself to
+    be: `categorize_by_content` recognises archives whose name says nothing,
+    and the refusal of an office container is extensional too -- a `.docx`
+    renamed to `.bin` is extracted as the zip it is. Neither this function nor
+    any list of extensions promises anything about bytes. The caller is told so
+    in the note `unboxr.cli` prints underneath.
+
+    Returns a dictionary of built-in types only, ready for `json.dumps` and for
+    a text renderer alike: ONE structure, two renderings, and no total computed
+    a second time on the way to either.
+    """
+    binary = find_7zip_binary()
+
+    extensions_by_state = {name: [] for name in FORMAT_SUPPORT_STATES}
+    for extension, category in CATEGORY_BY_EXT.items():
+        # THREE POSITIVE TESTS AND NO `else:`. The favourable state is read
+        # from its own list like the other two, so a category nobody sorted
+        # stops the listing by name instead of being announced as openable on
+        # every machine. See `CATEGORIES_OPENED_BY_THE_STANDARD_LIBRARY` for
+        # the mutation that measured what the `else:` cost.
+        if category in CATEGORIES_NEEDING_SEVEN_ZIP:
+            state = STATE_DELEGATED_TO_SEVEN_ZIP
+        elif category in CATEGORIES_REFUSED:
+            state = STATE_RECOGNISED_AND_REFUSED
+        elif category in CATEGORIES_OPENED_BY_THE_STANDARD_LIBRARY:
+            state = STATE_OPENED_BY_THE_STANDARD_LIBRARY
+        else:
+            raise UnclassifiedCategoryError(
+                f"{extension!r} is categorised as {category!r}, which belongs "
+                f"to none of CATEGORIES_NEEDING_SEVEN_ZIP, CATEGORIES_REFUSED "
+                f"and CATEGORIES_OPENED_BY_THE_STANDARD_LIBRARY. A category "
+                f"this projection cannot place is not filed under the "
+                f"favourable state by elimination: add it to the list that "
+                f"describes what this machine actually does with it.")
+        extensions_by_state[state].append(extension)
+    extensions_by_state[STATE_RECOGNISED_AND_NOT_OPENED].extend(
+        NOT_EXTRACTED_EXTENSIONS)
+
+    # THE SECOND WAY THE PARTITION CAN STOP BEING ONE, and the only one the
+    # loop above cannot see: an extension present in BOTH tables lands in two
+    # states, and every total still adds up -- its state's count and the sum
+    # over the states move together, identically. Nothing arithmetic notices,
+    # which is exactly why this is a test on the extensions themselves.
+    seen = [extension
+            for name in FORMAT_SUPPORT_STATES
+            for extension in extensions_by_state[name]]
+    if len(seen) != len(set(seen)):
+        duplicated = sorted({e for e in seen if seen.count(e) > 1})
+        raise UnclassifiedCategoryError(
+            f"{duplicated} reach more than one state: CATEGORY_BY_EXT and "
+            f"NOT_EXTRACTED_EXTENSIONS have stopped being disjoint, so the "
+            f"four states are no longer a partition and every total below "
+            f"would still add up.")
+
+    # SORTED, because the output of this command has to be comparable with
+    # itself. `CATEGORY_BY_EXT` iterates in insertion order and
+    # `NOT_EXTRACTED_EXTENSIONS` is a frozenset, whose iteration order is a
+    # property of the interpreter run; a listing two runs apart would differ
+    # for a reason that has nothing to do with the machine it measured.
+    states = {}
+    for name in FORMAT_SUPPORT_STATES:
+        extensions = sorted(extensions_by_state[name])
+        states[name] = {
+            "extensions": extensions,
+            "count": len(extensions),
+            # Only the standard-library state is open unconditionally. The
+            # delegated one is open exactly when the binary was found, and the
+            # two remaining states are closed on EVERY machine -- which is why
+            # neither of them is "unavailable here".
+            "openable_here": (name == STATE_OPENED_BY_THE_STANDARD_LIBRARY
+                              or (name == STATE_DELEGATED_TO_SEVEN_ZIP
+                                  and binary is not None)),
+            "depends_on_this_machine": name == _STATE_DEPENDS_ON_THE_MACHINE,
+        }
+
+    return {
+        "seven_zip_binary": binary,
+        "recognised_extensions": len(CATEGORY_BY_EXT),
+        "not_extracted_extensions": len(NOT_EXTRACTED_EXTENSIONS),
+        # Summed over the states rather than added up from the two tables a
+        # second time, so that this total and the per-state counts printed
+        # above it cannot disagree.
+        #
+        # AND IT IS NOT A CHECK ON THE PARTITION, which is what this comment
+        # claimed until code review on 15 September 2026 -- "if the partition
+        # above ever stopped being one, this total would move". It does not:
+        # an extension in both tables inflates a state's count and this sum by
+        # exactly one each, so the two agree on a wrong number. The partition
+        # is checked where it can actually be seen, on the extensions
+        # themselves, a few lines above -- and it RAISES rather than printing.
+        "listed_extensions": sum(state["count"] for state in states.values()),
+        # NAMED FOR ITS TYPE, and renamed for it. `openable_here` is a BOOLEAN
+        # inside every state ("does this machine open this state?"); a count
+        # carrying the same key at the top level put one name on two types in
+        # one machine-readable document, which is a consumer's bug waiting to
+        # be written. Measured in code review, 15 September 2026.
+        "extensions_openable_here": sum(state["count"]
+                                        for state in states.values()
+                                        if state["openable_here"]),
+        "states": states,
+    }
 
 
 def new_report() -> ExtractionReport:

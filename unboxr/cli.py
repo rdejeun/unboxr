@@ -1,16 +1,28 @@
 """The `unboxr` command line.
 
-A DELIBERATE FLOOR, and one that has now been added to three times. It opens
+A DELIBERATE FLOOR, and one that has now been added to four times. It opens
 an archive into a destination directory, says where the result is, and
 summarises what could not be opened. On request -- and only on request -- it
 also writes the extraction document: a CycloneDX inventory of the corpus, one
 file per component with its digest, plus every container that was not opened
 and why. On request again, that document says which other BOM it belongs to.
+And on request once more it opens nothing at all: `--list-formats` prints
+what THIS machine does with every extension the package recognises, in four
+states, and exits.
 
 WHAT IS STILL NOT THIS FLOOR. There is no self-check gate, no strict mode, and
 no verdict of any kind. The command does not fetch, open or resolve the BOM it
 is given the URN of, and it does not compose that URN: it is handed one, it
-checks its shape, and it refuses what it cannot recognise.
+checks its shape, and it refuses what it cannot recognise. `--list-formats`
+says what this installation CAN open, never what an archive contains, and it
+neither installs nor suggests installing anything.
+
+THE LISTING IS A RENDERING, NOT A SECOND TABLE. Everything it prints comes
+from `unboxr.extraction.project_format_support()`, which is where the
+extension tables live. What belongs to this module is the English a human
+reads -- the headings and the notes under them -- and not one count: a total
+computed here would be a figure to drift away from the tables the day an
+extension is added.
 
 WHAT CHANGED, AND WHY IT MATTERS MORE THAN IT LOOKS. This command used to learn
 about amputations of the corpus by READING ITS OWN LOGGING RECORDS: a
@@ -38,13 +50,26 @@ writing is a separate gesture, taken here.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
+import textwrap
 from pathlib import Path
 
 from . import __version__
 from . import sbom
-from .extraction import is_url, new_report, prepare_source, resolve_extraction_root
+from .extraction import (
+    FORMAT_SUPPORT_STATES,
+    STATE_DELEGATED_TO_SEVEN_ZIP,
+    STATE_OPENED_BY_THE_STANDARD_LIBRARY,
+    STATE_RECOGNISED_AND_NOT_OPENED,
+    STATE_RECOGNISED_AND_REFUSED,
+    is_url,
+    new_report,
+    prepare_source,
+    project_format_support,
+    resolve_extraction_root,
+)
 from .report import AMPUTATION_MESSAGES, ORACLE_REMINDER_SENTENCE, text_for
 
 # COMPOSED on the one constant, never retyped: the sentence itself lives in
@@ -88,6 +113,284 @@ class _QuietFilter(logging.Filter):
                 or record.msg in (NOT_OPENED_LINE, STILL_IN_TREE_LINE))
 
 
+# The English a human reads for each of the four states. The STATES are named
+# in `unboxr.extraction`, beside the tables that produce them; the prose is
+# here, because a library that carried the sentences a command prints would
+# have to be reworded to reword a heading.
+#
+# LOOKED UP, NEVER DEFAULTED. A state added upstream and forgotten here raises
+# `KeyError` on the first run, loudly, at the top of the listing. A `.get()`
+# with a fallback heading would print that state under a made-up name, which is
+# how a listing starts lying about what it is showing.
+FORMAT_STATE_HEADINGS = {
+    STATE_OPENED_BY_THE_STANDARD_LIBRARY: "Opened by the standard library",
+    STATE_DELEGATED_TO_SEVEN_ZIP: "Delegated to an external 7-Zip binary",
+    STATE_RECOGNISED_AND_REFUSED: "Recognised and refused",
+    STATE_RECOGNISED_AND_NOT_OPENED: "Recognised and deliberately not opened",
+}
+
+# THREE ENTRIES AND NOT FOUR, deliberately: the delegated state is the one
+# whose note depends on what this machine has, so it carries two of its own
+# below and none here. A fourth entry written here would be the one never
+# printed, and the first reader to reword it would reword nothing.
+FORMAT_STATE_NOTES = {
+    STATE_OPENED_BY_THE_STANDARD_LIBRARY:
+        "Opened here and on every machine: no binary, no dependency, nothing "
+        "to install.",
+    STATE_RECOGNISED_AND_REFUSED:
+        "Recognised so that the chain refuses them out loud rather than "
+        "passing over them in silence. No machine opens these: the standard "
+        "library has no reader for them here, and 7-Zip does not handle the "
+        "format either. It is not a capability that installing something adds.",
+    STATE_RECOGNISED_AND_NOT_OPENED:
+        "Opened by nothing, on purpose. These are ZIP containers unboxr knows "
+        "how to open and CHOOSES not to: an office document expands to "
+        "presentation markup and packaging parts, which is not the material a "
+        "caller asked for. The choice is made on the NAME a file carries, "
+        "never on what is inside it.",
+}
+
+# The same four states, named for the one line that counts them all. NOT the
+# headings above put through `.lower()`: that lower-cased `7-Zip` into a brand
+# name nobody writes, and it would do the same to the next proper noun that
+# entered a heading. Two registers, two strings, and the tie between them is
+# the KEY -- which is why both tables are keyed on the state and iterated
+# through `FORMAT_SUPPORT_STATES`, so a state can go missing from neither.
+FORMAT_STATE_SUMMARY_LABELS = {
+    STATE_OPENED_BY_THE_STANDARD_LIBRARY: "by the standard library",
+    STATE_DELEGATED_TO_SEVEN_ZIP: "delegated to 7-Zip",
+    STATE_RECOGNISED_AND_REFUSED: "recognised and refused",
+    STATE_RECOGNISED_AND_NOT_OPENED: "recognised and not opened",
+}
+
+# The delegated state is the one whose note depends on the machine, so it has
+# two -- and the absent case says what is NOT being claimed: these extensions
+# are listed because they are recognised. A listing that dropped them on a
+# machine without the binary would assert that unboxr does not know them,
+# which is a different statement, and a false one.
+SEVEN_ZIP_AVAILABLE_NOTE = (
+    "AVAILABLE on this machine: opened by handing them to the binary named "
+    "above. On a machine without it, these same extensions are recognised and "
+    "not openable.")
+SEVEN_ZIP_MISSING_NOTE = (
+    "NOT AVAILABLE on this machine: recognised, and not openable here. They "
+    "are listed because unboxr recognises them, not because it can open them "
+    "-- removing them from this listing would say it does not know them at "
+    "all. unboxr neither bundles, downloads nor installs 7-Zip.")
+
+# What a state with nothing in it says. A heading, a note explaining what
+# would be in it, and then four lines of prose about extensions followed by a
+# blank line where the extensions should be -- that is what an emptied state
+# printed until code review on 15 September 2026, and a reader has no way to
+# tell it from a rendering that lost them. A state with nothing in it says so,
+# in one line, and the note that describes extensions it does not have is left
+# unprinted. The state itself STAYS: dropping the heading would be the same
+# omission the four states exist to prevent.
+EMPTY_STATE_LINE = "  (no extension is in this state)"
+
+# WHAT THE MACHINE-READABLE LISTING IS, said in a value rather than left to be
+# inferred from the presence of a key named `unboxr`. A consumer matches on
+# this; the version beside it says which vocabulary it is reading, not which
+# document.
+FORMAT_SUPPORT_DOCUMENT_KIND = "unboxr.format-support"
+
+# What the listing is NOT, printed under it every time rather than left to be
+# inferred. Both sentences answer a question this listing invites and cannot
+# answer: it is about the NAME a file declares, and it was measured here, now.
+FORMAT_LISTING_CAVEAT = (
+    "Every number above is counted from the tables at run time, on this "
+    "machine -- count them here rather than trusting a figure typed into a "
+    "README. And every line of it is about the NAME a file declares: an "
+    "archive whose extension is absent or misleading may still be recognised "
+    "by its header, and any of the names above may be carried by something "
+    "else entirely.")
+
+
+def _wrapped_extensions(extensions) -> str:
+    """The extensions of one state, indented and wrapped for a terminal.
+
+    ONE LINE PER STATE RUNS TO HUNDREDS OF CHARACTERS for the two largest,
+    which a terminal then wraps at a width nobody chose, mid-extension. The
+    width is
+    fixed at 78 rather than read from the terminal, and that is the point: the
+    listing has to be comparable with itself between two runs, and a width
+    that followed the window would make two runs on one machine differ for a
+    reason that has nothing to do with what that machine can open.
+    """
+    return textwrap.fill(" ".join(extensions), width=78,
+                         initial_indent="  ", subsequent_indent="  ",
+                         break_on_hyphens=False, break_long_words=False)
+
+
+def codec_safe(text: str, encoding: str | None) -> str:
+    """The same text, with whatever `encoding` cannot carry made VISIBLE.
+
+    THE ONE COMMAND WHOSE JOB IS TO REPORT THE BINARY WAS THE ONE THAT COULD
+    NOT PRINT IT. `find_7zip_binary` returns a path taken off this machine --
+    the PATH sweep, or a default install location under a user profile -- and a
+    path is not required to be encodable in whatever codec `stdout` happens to
+    carry. Reproduced on Windows on 15 September 2026: `stdout` redirected to a
+    file under `cp1252`, a 7-Zip path holding CJK characters, and
+    `--list-formats` died with a raw `UnicodeEncodeError` traceback, return
+    code 1, ZERO bytes printed. A listing that cannot say where the binary is,
+    on precisely the machine whose binary is unusual, is the listing failing at
+    its own subject.
+
+    ESCAPED, NEVER DROPPED and never replaced by a question mark. `backslash
+    replace` keeps every character recoverable in the output -- a reader can
+    still tell two different paths apart, and paste the escape into a search --
+    where `?` would silently turn several different paths into one. The
+    degradation is VISIBLE, which is the whole difference between reporting a
+    limit and hiding one.
+
+    A MISSING `encoding` IS NOT A FAULT. `io.StringIO`, which is what every
+    test in this suite redirects `stdout` to, has no encoding at all and
+    carries any string; so does a stream a caller substituted. `None` means "no
+    codec to be refused by", and the text goes through unchanged.
+    """
+    if encoding is None:
+        return text
+    try:
+        text.encode(encoding, errors="strict")
+    except (UnicodeEncodeError, LookupError):
+        # `LookupError`: a stream declaring a codec Python does not know. Its
+        # answer is the same as an unencodable character -- ASCII escapes -- so
+        # it is handled here rather than crashing one line further down.
+        return text.encode("ascii", errors="backslashreplace").decode("ascii")
+    return text
+
+
+def print_listing(text: str, stream=None) -> None:
+    """The listing, out, whatever the stream's codec will accept.
+
+    `print`, NOT `logging`, for the reason `main` gives at the call site. What
+    is added here is the codec: `print` would raise on the first character the
+    stream cannot carry, having already written the lines before it.
+    """
+    stream = sys.stdout if stream is None else stream
+    print(codec_safe(text, getattr(stream, "encoding", None)), file=stream)
+
+
+def render_format_support(projection) -> str:
+    """The listing a human reads, built from the projection and nothing else.
+
+    A PURE FUNCTION OF ITS ARGUMENT. It measures nothing itself -- the one
+    measurement, the 7-Zip binary, was taken by `project_format_support` and
+    travels inside the projection -- so this text and the JSON below say the
+    same thing about the same instant, and a test can hand this function a
+    projection taken on a machine it is not running on.
+    """
+    def counted(names):
+        return ", ".join(
+            f"{projection['states'][name]['count']} "
+            f"{FORMAT_STATE_SUMMARY_LABELS[name]}"
+            for name in names)
+
+    lines = [f"unboxr {__version__} -- what this machine does with the "
+             f"{projection['listed_extensions']} extensions it knows by "
+             f"name.",
+             ""]
+    if projection["seven_zip_binary"] is not None:
+        lines.append(f"7-Zip binary found: {projection['seven_zip_binary']}")
+    else:
+        lines.append("No 7-Zip binary found on this machine.")
+
+    for name in FORMAT_SUPPORT_STATES:
+        state = projection["states"][name]
+        lines.append("")
+        lines.append(f"{FORMAT_STATE_HEADINGS[name]} -- {state['count']} "
+                     f"extension(s)")
+        if not state["extensions"]:
+            # SAID, not left to be inferred from a blank line. See
+            # `EMPTY_STATE_LINE`: the note is skipped with the list, because
+            # four lines explaining what this state does with its extensions,
+            # above no extensions at all, reads as a rendering that dropped
+            # them.
+            lines.append(EMPTY_STATE_LINE)
+            continue
+        if name == STATE_DELEGATED_TO_SEVEN_ZIP:
+            note = (SEVEN_ZIP_AVAILABLE_NOTE if state["openable_here"]
+                    else SEVEN_ZIP_MISSING_NOTE)
+        else:
+            note = FORMAT_STATE_NOTES[name]
+        lines.append(textwrap.fill(note, width=78, initial_indent="  ",
+                                   subsequent_indent="  "))
+        lines.append(_wrapped_extensions(state["extensions"]))
+
+    # THE SPLIT IS THE TABLES' OWN, and the wording follows it rather than
+    # flattening the four states into one addition. `recognised_extensions`
+    # counts the extensions unboxr has a category for -- the number every
+    # report already prints in "N of the M recognised extensions need
+    # 7-Zip" -- and the office containers are counted apart because they
+    # are in a table of their own. One flat total, called "recognised",
+    # would contradict in this very output the figure `summarise` prints at
+    # the end of every extraction, and a reader comparing the two would be
+    # right to trust neither.
+    #
+    # AND THE BREAKDOWN IS DERIVED, NOT TYPED OUT. It was a hand-written
+    # 3-tuple until code review on 15 September 2026, three lines under a
+    # comment claiming every table here is iterated through
+    # `FORMAT_SUPPORT_STATES` precisely so that a state can go missing from
+    # none of them. Measured: a FIFTH state made this sentence print
+    # "33 + 31 + 4" under a stated total of 69 -- an addition that does not
+    # add up, in the one sentence of the listing a reader checks. The states
+    # counted here are every state EXCEPT the one fed by the other table,
+    # which is the distinction the sentence is built on and the only reason
+    # the fourth is not in the sum.
+    recognised_states = tuple(name for name in FORMAT_SUPPORT_STATES
+                              if name != STATE_RECOGNISED_AND_NOT_OPENED)
+    lines.append("")
+    lines.append(textwrap.fill(
+        f"{projection['recognised_extensions']} recognised extensions: "
+        + counted(recognised_states)
+        + f". {projection['not_extracted_extensions']} more are recognised "
+          f"as containers and deliberately not opened. "
+          f"{projection['listed_extensions']} listed here, "
+          f"{projection['extensions_openable_here']} of them openable on this "
+          f"machine.",
+        width=78))
+    lines.append("")
+    lines.append(textwrap.fill(FORMAT_LISTING_CAVEAT, width=78))
+    return "\n".join(lines)
+
+
+def render_format_support_as_json(projection) -> str:
+    """The same projection, for something other than a human.
+
+    THE VERSION IS ADDED HERE AND NOT IN THE PROJECTION, and the reason is an
+    import cycle: `unboxr/__init__.py` imports `unboxr.extraction`, so the
+    module holding the tables cannot read the version back out of the package.
+    The text rendering above puts it in its first line for the same purpose,
+    so the two renderings carry the same fact rather than one of them being
+    quietly poorer than the other.
+
+    AND THE KIND IS ADDED HERE TOO. A version alone is not an identity: a
+    consumer handed this document had nothing to match on but the PRESENCE of
+    a key named `unboxr`, which every future machine-readable thing this
+    command might print would carry just as well. `kind` says which document
+    this is, in one value, so a reader can refuse one it does not understand
+    instead of guessing from the shape.
+
+    `sort_keys` is deliberately NOT set: the keys come out in the order the
+    projection declares them -- which is the order the four states are meant
+    to be read in, not the alphabet. That order is fixed by a tuple in
+    `unboxr.extraction`, so the output is deterministic either way.
+
+    WHY THIS RENDERING NEEDS NO CODEC GUARD, and it is a dependency rather than
+    a property of the data: `json.dumps` defaults to `ensure_ascii=True`, so
+    the 7-Zip path it carries -- the one value here taken off the machine, and
+    the one that broke the TEXT rendering on a `cp1252` stdout -- comes out as
+    `\\uXXXX` escapes whatever it holds. The day someone passes
+    `ensure_ascii=False` for prettier output, this rendering acquires exactly
+    the failure `codec_safe` exists to absorb. It goes out through
+    `print_listing` all the same, which costs nothing and stops that day from
+    being a crash.
+    """
+    return json.dumps({"unboxr": __version__,
+                       "kind": FORMAT_SUPPORT_DOCUMENT_KIND,
+                       **projection}, indent=2)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="unboxr",
@@ -97,10 +400,34 @@ def build_parser() -> argparse.ArgumentParser:
                "cannot or will not open are announced: what could not be opened "
                "cannot be reported on.",
     )
+    # OPTIONAL, AND DECIDED IN `main` RATHER THAN BY argparse -- on the
+    # exact pattern `destination` already follows since story 14.8. An
+    # argparse action that prints and exits (the `--version` mechanism)
+    # would also short-circuit a required positional, but it runs DURING
+    # parsing, at the position the option occupies in `argv`: `--json
+    # --list-formats` and `--list-formats --json` would then behave
+    # differently. An optional positional keeps every refusal in one place,
+    # in a written order.
+    #
+    # QUALIFIED, because as written this argues against something the parser
+    # below already does TWICE. `--version` and `--help` ARE print-and-exit
+    # actions, they DO run at the position they occupy in `argv`, and
+    # `--list-formats --version` therefore prints the version and exits --
+    # measured on 15 September 2026, and it is argparse's behaviour rather
+    # than anything this file chose. The argument is not that no such action
+    # may exist here; it is that `--list-formats` must not become the THIRD,
+    # because it is the only one of the three whose result depends on other
+    # options (`--json`) and whose refusals have to be ordered against the
+    # refusals of an extraction. `--version` and `--help` answer questions
+    # that nothing in `argv` can change the answer to, which is exactly why
+    # position does not matter for them and does for this one.
     parser.add_argument(
         "archive",
+        nargs="?",
+        default=None,
         help="Path to a local archive, or a public http(s) URL. A URL is the "
-             "only input that makes unboxr touch the network.",
+             "only input that makes unboxr touch the network. Required, "
+             "except with --list-formats, which opens nothing.",
     )
     parser.add_argument(
         "destination",
@@ -156,6 +483,19 @@ def build_parser() -> argparse.ArgumentParser:
              "without it.",
     )
     parser.add_argument(
+        "--list-formats", action="store_true",
+        help="Print what THIS machine does with every extension unboxr "
+             "recognises -- opened by the standard library, delegated to a "
+             "7-Zip binary, recognised and refused, or recognised and "
+             "deliberately not opened -- then exit. Nothing is extracted, "
+             "and no ARCHIVE is taken.",
+    )
+    parser.add_argument(
+        "--json", action="store_true",
+        help="Print that listing as JSON instead of text. Requires "
+             "--list-formats, and is refused without it.",
+    )
+    parser.add_argument(
         "--version", action="version", version=f"unboxr {__version__}",
     )
     return parser
@@ -164,11 +504,20 @@ def build_parser() -> argparse.ArgumentParser:
 def check_linked_bom(parser, linked_bom, document_path) -> None:
     """Refuse a link that has no object, or no recognisable shape, NOW.
 
-    DECIDED FROM THE ARGUMENTS ALONE, WHICH IS WHY IT COMES FIRST. Nothing
-    here touches the file system: the two faults are readable in `argv` and
-    nothing about the state of the machine can change the answer. A refusal
-    that cannot be pre-empted by an unrelated file-system state is a refusal
-    that always names the reason that actually applies.
+    DECIDED FROM THE ARGUMENTS ALONE, WHICH IS WHY IT COMES FIRST OF THE
+    REFUSALS THAT CONCERN AN EXTRACTION. Nothing here touches the file
+    system: the two faults are readable in `argv` and nothing about the
+    state of the machine can change the answer. A refusal that cannot be
+    pre-empted by an unrelated file-system state is a refusal that always
+    names the reason that actually applies.
+
+    WHAT NOW RUNS BEFORE IT, and the qualification above is there because of
+    it: the two refusals that belong to `--list-formats`, plus the missing
+    ARCHIVE. Those are argv-only too -- the claim "the only one decidable
+    without touching the file system" stopped being true and is not left
+    standing. They come before because a run that extracts nothing at all
+    must not be refused for the shape of an option that describes a
+    document it was never going to write.
 
     THE DEPENDENCY IS CHECKED BEFORE THE VALUE. An option with no object at
     all is not examined for the shape of its argument: a caller who forgot
@@ -431,8 +780,96 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # FIRST OF ALL THE REFUSALS, because it is the only one decidable without
-    # touching the file system at all. See `check_linked_bom`.
+    # THE LISTING MODE IS SETTLED BEFORE ANYTHING ELSE, in a written order,
+    # and it is the whole reason `archive` is an optional positional rather
+    # than an argparse action (see `build_parser`). No source is prepared,
+    # no logging handler is installed, no archive is opened and no network
+    # is reached: this mode reads the extension tables, looks once for a
+    # 7-Zip binary, and exits.
+    #
+    # THAT LOOK IS NOT NOTHING, and saying "it touches no file system"
+    # would be a shade too clean: `find_7zip_binary` sweeps the PATH and,
+    # on Windows, stats a handful of default install locations. It reads no
+    # file, writes nothing anywhere, and is the same call every extraction
+    # makes -- but it is the one thing here that asks the machine a
+    # question, which is precisely what this mode exists to report.
+    #
+    # THE NARROWER FAULT FIRST. `--json` with no listing to shape is a
+    # smaller mistake than `--list-formats` handed an archive, and a caller
+    # who made both should be told about the option that has no object at
+    # all before being told what the listing does not do -- the same
+    # ordering rule `check_linked_bom` applies to its own two faults.
+    if args.json and not args.list_formats:
+        parser.error(
+            "--json has no object on its own: it names the shape of the "
+            "--list-formats listing, and nothing else this command prints "
+            "is machine-readable. Add --list-formats, or drop --json")
+
+    if args.list_formats:
+        # REFUSED, NEVER IGNORED. `unboxr a.zip dest --list-formats` would
+        # print a listing and extract NOTHING, and the caller would read a
+        # successful-looking run as an extraction that happened. An option
+        # ignored in silence makes someone believe in work that was never
+        # done -- the same motive `check_linked_bom` acts on a few lines
+        # below, and the one the upstream project has already applied twice.
+        #
+        # THE WHOLE SHAPE OF AN EXTRACTION IS CHECKED, not just the
+        # positionals: `--sbom` names a document this mode does not write
+        # and `--linked-bom` a link it does not record, so accepting them
+        # here would be the same silence by another door. `--verbose` and
+        # `--quiet` are deliberately NOT in this list: they govern the
+        # logging stream, which this mode does not use, and neither of them
+        # can make a caller believe an extraction took place.
+        extraction_arguments = [name for name, given in (
+            ("ARCHIVE", args.archive is not None),
+            ("DESTINATION", args.destination is not None),
+            ("--replace", args.replace),
+            ("--no-archive-dir", args.no_archive_dir),
+            ("--sbom", args.sbom is not None),
+            ("--linked-bom", args.linked_bom is not None),
+        ) if given]
+        if extraction_arguments:
+            parser.error(
+                "--list-formats prints what this machine can open and "
+                "exits, extracting nothing: "
+                + ", ".join(extraction_arguments)
+                + " would be ignored. Run --list-formats on its own, or "
+                  "drop it to extract")
+
+        # ONE PROJECTION, TWO RENDERINGS. Both read the same structure, so
+        # the JSON cannot carry a total the text disagrees with, and the
+        # single measurement inside it -- was a 7-Zip binary found? -- is
+        # taken once.
+        #
+        # `print`, NOT `logging`. This package configures no logging of its
+        # own, `--quiet` could hide a stream record, and a listing asked for
+        # explicitly is the output of the program, not a note about it. The
+        # one other machine-readable thing this command prints, the path of
+        # the extracted tree, already goes out this way.
+        #
+        # AND THROUGH `print_listing`, WHICH IS STILL `print`. The one value
+        # here that this package did not write -- the path of the 7-Zip binary
+        # -- comes off the machine, and a machine is free to hold a path its
+        # own stdout codec cannot carry. Printed raw, that killed the whole
+        # listing with a traceback and nothing on stdout at all.
+        projection = project_format_support()
+        print_listing(render_format_support_as_json(projection) if args.json
+                      else render_format_support(projection))
+        return 0
+
+    # ARGPARSE USED TO WRITE THIS SENTENCE ITSELF, and stopped the moment
+    # `archive` became optional. It is written here, in argparse's own
+    # words plus the condition that made the positional optional, and it is
+    # checked HERE -- before every refusal that reads `args.archive` -- so
+    # that omitting the archive is still answered with "archive", exactly
+    # as it was. Same pattern, same place in the order, as `destination`.
+    if args.archive is None:
+        parser.error("the following arguments are required: archive "
+                     "(omit it only together with --list-formats)")
+
+    # FIRST OF THE REFUSALS THAT CONCERN AN EXTRACTION, because it is the
+    # only one of those decidable without touching the file system at all.
+    # See `check_linked_bom`.
     check_linked_bom(parser, args.linked_bom, args.sbom)
 
     # DECIDABLE FROM argv ALONE, next: the shape of the invocation itself,

@@ -100,6 +100,8 @@ source is already a directory.
 | `-q`, `--quiet` | warnings only -- **plus every announced amputation** |
 | `--sbom FILE` | also write the extraction document to FILE (see below) |
 | `--linked-bom URN` | record which other BOM that document belongs to (see below) |
+| `--list-formats` | print what *this machine* does with every recognised extension, and exit (see below) |
+| `--json` | print that listing as JSON; requires `--list-formats` |
 | `--version` | print the version and exit |
 | `--help` | the full usage |
 
@@ -121,6 +123,17 @@ in, and an option quietly ignored would let you believe something was recorded
 when nothing was written at all. And a URN whose shape `unboxr` does not
 recognise is refused rather than written: see below for what the shape is and
 why nothing else checks it.
+
+`--list-formats` is the one invocation that takes no ARCHIVE at all: it prints
+what this installation can open and exits, extracting nothing. It is refused
+when combined with an ARCHIVE, a DESTINATION, `--replace`, `--no-archive-dir`,
+`--sbom` or `--linked-bom` -- an option quietly ignored would let you believe
+an extraction took place. `-v` and `-q` are accepted and do nothing here. See
+*7-Zip is optional* below.
+
+Adding `--list-formats` cost two abbreviations: `--l` and `--li` used to reach
+`--linked-bom` and are now ambiguous, refused with code 2. `--lin` and
+anything longer are unaffected.
 
 This command line is deliberately a **floor**. It writes no document unless you
 ask for one, and it has no self-check gate, no strict mode and no verdict of
@@ -402,17 +415,53 @@ download or install it.
 
 Every report says which binary was found, if any, and how many of the
 recognised extensions depend on it -- measured on the machine that ran, not
-supposed. Count them yourself rather than trusting a number in a README:
+supposed. Ask your own installation rather than trusting a number in a README:
 
 ```sh
-python -c "import unboxr; t=unboxr.CATEGORY_BY_EXT; \
-print(len(t), 'extensions,', \
-sum(v in ('external_7zip','tar_7z') for v in t.values()), 'need 7-Zip')"
+unboxr --list-formats
 ```
 
+From an unpacked clone, with nothing installed and no console script on the
+PATH -- which is how a vendored copy and an air-gapped install both start out
+-- the same listing comes out of:
+
 ```sh
-python -c "import unboxr; print(len(unboxr.NOT_EXTRACTED_EXTENSIONS), 'excluded')"
+python -m unboxr.cli --list-formats
 ```
+
+Every figure it prints is counted from the extension tables at the moment you
+run it, and the binary is looked for at the moment you run it. Nothing is
+extracted, no ARCHIVE is taken, and nothing is written anywhere.
+
+It sorts every extension `unboxr` knows by name into **four states**, because
+two would be a lie:
+
+| State | What it means |
+|---|---|
+| **Opened by the standard library** | opened here and on every machine: no binary, no dependency |
+| **Delegated to an external 7-Zip binary** | opened *if* a binary was found -- the one state whose answer depends on the machine |
+| **Recognised and refused** | recognised so the chain refuses them out loud rather than passing over them in silence. No machine opens these, and no installation adds the capability -- run the command to see which extensions are in this state on your copy |
+| **Recognised and deliberately not opened** | office containers: ZIPs `unboxr` knows how to open and chooses not to |
+
+On a machine **without** 7-Zip, the delegated extensions are still listed, and
+marked not openable here. They are not dropped: removing them would say
+`unboxr` does not recognise them, which is a different claim and a false one.
+
+```sh
+unboxr --list-formats --json
+```
+
+prints the same projection -- same four states, same totals -- for something
+other than a human. `--json` requires `--list-formats` and is refused without
+it, and `--list-formats` is refused together with anything that describes an
+extraction: it would print a listing while extracting nothing, and let you
+believe an extraction happened.
+
+`-v`/`--verbose` and `-q`/`--quiet` are the exception to that refusal: they are
+**accepted and have no effect** here. They govern the logging stream, and this
+mode does not use it -- it prints its listing on stdout and emits no record at
+all. Neither of them can make you believe an extraction took place, which is
+the reason the others are refused.
 
 ## Network
 

@@ -84,6 +84,53 @@ VERDICT_MARKERS = (
     "declarer(",
 )
 
+# THE SECOND VOCABULARY FAMILY, and the reason this file holds two.
+#
+# `FORBIDDEN_TOKENS` above is checked against the SOURCE of the package, where
+# every occurrence is a fault whatever the sentence around it. The tokens below
+# are the opposite kind of word: ordinary English that the source is entirely
+# free to use -- `_ensure_safe_extraction_path`, "the security filter", "a
+# trusted root" -- and that must not appear in what a CALLER READS at run time,
+# where a listing of what this installation can open would turn into a
+# judgement about what an archive contains.
+#
+# TWO LISTS, ONE HOME, AND THEY ARE DISJOINT ON PURPOSE. Until code review on
+# 15 September 2026 the runtime half lived as a literal tuple inside
+# `tests/test_cli.py`: the two guards shared no entry, neither referenced the
+# other, and nothing said whether that was a decision or an oversight.
+# `tests/test_cli.py` now imports these names from here and checks the rendered
+# output against BOTH families, so a token added to either is a token both
+# surfaces are held to.
+VERDICT_CLAIM_TOKENS = ("verdict", "compliant", "approved", "certified",
+                        "trusted", "safe", "secure")
+
+# AND A DISCLAIMER IS NOT A CLAIM. A bare `assertNotIn("verdict", output)` goes
+# red on this package's own central sentence -- "unboxr renders no verdict on
+# what it extracts" -- which `--help` prints on every run. A guard that fires
+# on the disclaimer it exists to protect is a guard somebody switches off, and
+# it can tell nobody the difference between a package saying it judges nothing
+# and a package saying it judged something. These phrases are struck out of the
+# text before the search, so what remains is claims only.
+VERDICT_DISCLAIMER_PHRASES = (
+    "renders no verdict",
+    "mints no verdict",
+    "no verdict of any kind",
+)
+
+
+def verdict_claims_in(text: str) -> list[str]:
+    """The claim tokens a rendered output makes, disclaimers struck out first.
+
+    Returns a sorted list, so a failure names WHICH word was found rather than
+    only that one was. Case-insensitive: the output is prose, and "Certified"
+    claims exactly what "certified" claims.
+    """
+    lowered = text.lower()
+    for phrase in VERDICT_DISCLAIMER_PHRASES:
+        lowered = lowered.replace(phrase, " ")
+    return sorted({token for token in VERDICT_CLAIM_TOKENS
+                   if token in lowered})
+
 
 def _package_files() -> list[Path]:
     return sorted(PACKAGE_ROOT.glob("*.py"))
@@ -206,6 +253,39 @@ class TestVocabularyBoundary(unittest.TestCase):
                 with self.subTest(module=path.name, marker=marker):
                     self.assertNotIn(marker, source)
 
+    def test_the_two_vocabulary_families_are_disjoint_and_stay_so(self):
+        """A DECISION, written as an assertion rather than left as a
+        coincidence. The two lists guard different surfaces and must not
+        overlap: a word banned from the SOURCE has no business being merely
+        watched at run time, and a word that is ordinary English in a
+        docstring must not be banned from the source by the back door. Code
+        review, 15 September 2026, found the runtime half living in another
+        file with no entry in common and no reference either way -- which is
+        this same property, holding by accident."""
+        self.assertEqual(set(), set(FORBIDDEN_TOKENS) & set(VERDICT_CLAIM_TOKENS))
+        self.assertNotEqual((), VERDICT_CLAIM_TOKENS)
+
+    def test_a_disclaimer_is_not_read_as_a_claim(self):
+        """The guard must tell "we judge nothing" from "we judged this".
+
+        `unboxr renders no verdict on what it extracts` is the package's own
+        sentence and `--help` prints it. A guard that went red on it would be
+        switched off, and a guard switched off catches the real claim too.
+        """
+        self.assertEqual([], verdict_claims_in(unboxr.cli.build_parser().epilog))
+        self.assertEqual([], verdict_claims_in(
+            "unboxr renders no verdict on what it extracts."))
+
+    def test_a_real_claim_is_still_caught(self):
+        """And the other half of the same guard: struck-out disclaimers must
+        not become a way to smuggle a claim past it. Without this case, a
+        helper that returned the empty list unconditionally would pass the
+        test above."""
+        self.assertEqual(["verdict"], verdict_claims_in(
+            "unboxr renders no verdict; this archive has a verdict."))
+        self.assertEqual(["certified", "safe"], verdict_claims_in(
+            "This tree is certified safe."))
+
     def test_the_package_borrows_no_upstream_message_prefix(self):
         """A published package uses its ecosystem's standard logging. The
         bracketed prefixes belong to the project this code came from, and levels
@@ -303,7 +383,36 @@ class TestPackagingBoundary(unittest.TestCase):
         # order) and seven of diagnostics and prose. No public signature
         # moved and no document this package builds comes out differently, so
         # a PATCH version.
-        self.assertEqual("2.1.1", unboxr.__version__)
+        # 2.2.0 is `--list-formats`: the command projects the extension tables
+        # onto the four states it sorts every recognised extension into, and
+        # `--json` renders the same projection for a machine. A MINOR version:
+        # no public signature moved, no document changed a byte, and nothing
+        # that was extracted before is extracted differently.
+        # THREE THINGS IT IS NOT A PURE ADDITION, NAMED RATHER THAN GLOSSED.
+        # (a) The TEXT of a usage error: `archive` became an optional
+        # positional, the way `destination` did at 2.0.0, so `main` writes the
+        # "required: archive" sentence argparse used to write. Same refusal,
+        # same code 2.
+        # (b) The USAGE LINE of `--help`, for the same reason: `[archive]` is
+        # now advertised optional unconditionally, where it used to be
+        # mandatory. What is optional is stated in the option's own help text
+        # and enforced in `main`; the one-line usage cannot express "optional
+        # only with --list-formats".
+        # (c) AND THE ONE THAT IS A REAL BEHAVIOURAL REGRESSION, measured on
+        # 15 September 2026 and pinned by
+        # `TestListingWhatThisMachineCanOpen.test_the_new_option_makes_two_
+        # abbreviations_of_linked_bom_ambiguous`: `--l` and `--li` used to be
+        # valid abbreviations of `--linked-bom` and now exit 2, because
+        # argparse's prefix matching finds `--list-formats` too. An invocation
+        # that worked returns a different result, which is why "no existing
+        # invocation produces a different result" is NOT written here. The
+        # option keeps its name -- it was chosen, and renaming it to dodge an
+        # abbreviation nobody documented would be the wrong trade -- and
+        # `allow_abbrev` stays on: turning it off would break EVERY
+        # abbreviation of every option at once, a far larger break than the
+        # two this costs. `--link`, `--linked` and `--linked-bom` are
+        # unaffected.
+        self.assertEqual("2.2.0", unboxr.__version__)
         source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("importlib.metadata", source)
 
