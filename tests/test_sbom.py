@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import shutil
 import sys
 import tempfile
@@ -998,12 +999,25 @@ class TestTheDocumentIsDeterministic(_Bench):
 
     def test_the_serialisation_fixes_every_parameter_that_moves_the_bytes(self):
         """A default that changed would change the bytes of every document
-        produced afterwards, with nothing to say so."""
+        produced afterwards, with nothing to say so.
+
+        `sort_keys` LEFT THE LIST, AND ITS ABSENCE IS GUARDED IN ITS PLACE.
+        The order of the keys now comes from a declared table; asking
+        `json.dumps` to sort as well would throw that order away and put the
+        keys back in alphabetical order, in silence. What the parameter used
+        to protect -- bytes independent of the order the dictionaries happen
+        to be written in -- `_in_key_order` protects, so its call is pinned
+        here for exactly the reason the parameters are.
+        """
         import inspect
         source = inspect.getsource(sb.serialise)
-        for parameter in ("ensure_ascii=True", "indent=2", "sort_keys=True"):
+        for parameter in ("ensure_ascii=True", "indent=2"):
             with self.subTest(parameter=parameter):
                 self.assertIn(parameter, source)
+        for call in ("_in_key_order(", "_fold_two_key_objects("):
+            with self.subTest(call=call):
+                self.assertIn(call, source)
+        self.assertNotIn("sort_keys=", source)
 
     def test_a_file_name_that_no_encoder_can_represent_does_not_lose_the_document(self):
         """A POSIX file system can hand over a name carrying lone surrogates.
@@ -2108,6 +2122,279 @@ class TestTheCommandLinksTheDocument(_CommandBench):
 
         self.assertEqual(0, code)
         self.assertNotIn("externalReferences", self._read(document_path))
+
+
+# ---------------------------------------------------------------------------
+# The keys come out in the order the schema declares them
+# ---------------------------------------------------------------------------
+class _OrderBench(_Bench):
+    """Documents covering every branch that can add a key.
+
+    ONE DOCUMENT IS NOT ENOUGH, and the reason is the whole point of the guard
+    below: `externalReferences`, and with it `url` and `comment`, exist only
+    when a link was supplied, and `hashes` is absent from a subject that is not
+    a file. A guard built on the nominal document alone would pass while
+    knowing nothing of half the keys this package can write.
+    """
+
+    def _every_shape_of_document(self):
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a"),
+                                                    ("b.txt", "b")])
+        prepared = ux.prepare_source(str(archive), workspace=self.dir / "w")
+        linked = sb.build_document(
+            prepared.report, prepared.tree, source=str(archive),
+            source_digest=prepared.digest, source_kind=sb.SOURCE_IS_ARCHIVE,
+            linked_bom=GOOD_LINK)
+        plain = sb.build_document(
+            prepared.report, prepared.tree, source=str(archive),
+            source_digest=prepared.digest, source_kind=sb.SOURCE_IS_ARCHIVE)
+
+        source_dir = self.dir / "src"
+        source_dir.mkdir()
+        (source_dir / "c.txt").write_text("c", encoding="utf-8")
+        from_directory = ux.prepare_source(str(source_dir),
+                                           workspace=self.dir / "w2")
+        directory = sb.build_document(
+            from_directory.report, from_directory.tree, source=str(source_dir),
+            source_digest=from_directory.digest,
+            source_kind=sb.SOURCE_IS_DIRECTORY)
+
+        failed = sb.build_document(
+            prepared.report, None, source=str(archive),
+            source_digest=prepared.digest, source_kind=sb.SOURCE_IS_ARCHIVE)
+
+        return {"linked": linked, "plain": plain, "directory": directory,
+                "failed": failed}
+
+    def _keys_of(self, value, found=None):
+        found = set() if found is None else found
+        if isinstance(value, dict):
+            found.update(value)
+            for nested in value.values():
+                self._keys_of(nested, found)
+        elif isinstance(value, list):
+            for nested in value:
+                self._keys_of(nested, found)
+        return found
+
+    def _objects_of(self, value, found=None):
+        found = [] if found is None else found
+        if isinstance(value, dict):
+            found.append(value)
+            for nested in value.values():
+                self._objects_of(nested, found)
+        elif isinstance(value, list):
+            for nested in value:
+                self._objects_of(nested, found)
+        return found
+
+
+class TestTheKeysComeOutInTheOrderOfTheSchema(_OrderBench):
+
+    def test_every_key_the_document_produces_is_declared_in_a_table(self):
+        """THE GUARD THAT REPLACES `sort_keys`. Sorting made the bytes
+        independent of the order `build_document` happens to write its
+        dictionaries in. The table does that now -- but only for the keys it
+        knows, so a field added tomorrow and forgotten here would come out at
+        an arbitrary place with nobody the wiser."""
+        for shape, document in self._every_shape_of_document().items():
+            for key in sorted(self._keys_of(document)):
+                with self.subTest(shape=shape, key=key):
+                    self.assertIn(key, sb.KEY_ORDER)
+
+    def test_the_branches_that_add_keys_really_are_exercised(self):
+        """A guard whose corpus never reaches the optional branches would pass
+        while proving nothing of them. Checked POSITIVELY, so that a document
+        that stopped carrying a link could not quietly empty the guard above."""
+        shapes = self._every_shape_of_document()
+        linked = self._keys_of(shapes["linked"])
+        self.assertLessEqual({"externalReferences", "url", "comment"}, linked)
+        self.assertIn("hashes", linked)
+        self.assertNotIn("externalReferences", self._keys_of(shapes["plain"]))
+        subject = shapes["directory"]["metadata"]["component"]
+        self.assertNotIn("hashes", subject)
+
+    def test_each_object_carries_its_keys_in_the_order_of_its_type(self):
+        """Read from the schema, not deduced: `hashes` comes BEFORE
+        `properties` on a component, and the link reads `url, comment, type`."""
+        document = self._every_shape_of_document()["linked"]
+        self.assertEqual(
+            ["bomFormat", "specVersion", "serialNumber", "version", "metadata",
+             "components", "externalReferences"],
+            list(document))
+        self.assertEqual(["timestamp", "tools", "component", "properties"],
+                         list(document["metadata"]))
+
+        # THE ORDER IS A PROPERTY OF THE TEXT, not of the structure
+        # `build_document` returns: that one still comes back in the order it
+        # was written in, and the link is the object where the two differ.
+        reread = json.loads(sb.serialise(document))
+        self.assertEqual(["url", "comment", "type"],
+                         list(reread["externalReferences"][0]))
+        self.assertEqual(["type", "bom-ref", "name", "hashes", "properties"],
+                         list(reread["components"][0]))
+        self.assertEqual(["type", "name", "version"],
+                         list(reread["metadata"]["tools"]["components"][0]))
+        self.assertEqual(["name", "value"],
+                         list(reread["metadata"]["properties"][0]))
+        self.assertEqual(["alg", "content"],
+                         list(reread["components"][0]["hashes"][0]))
+
+    def test_a_key_no_table_declares_is_never_lost(self):
+        """It comes out AFTER the declared keys, alphabetically. Losing it, or
+        raising on it, would make a public function refuse a document it has
+        no business judging."""
+        document = {"components": [], "zzz": 1, "aaa": 2, "bomFormat": "x"}
+        self.assertEqual(["bomFormat", "components", "aaa", "zzz"],
+                         list(json.loads(sb.serialise(document))))
+
+    def test_the_total_order_respects_every_table_it_was_derived_from(self):
+        """The applied order is DERIVED, never written beside the tables: two
+        sources of truth for the same thing drift the day one is edited."""
+        rank = {key: index for index, key in enumerate(sb.KEY_ORDER)}
+        for kind, order in sb.SCHEMA_KEY_ORDER.items():
+            for earlier, later in zip(order, order[1:]):
+                with self.subTest(kind=kind, earlier=earlier, later=later):
+                    self.assertLess(rank[earlier], rank[later])
+
+    def test_tables_that_contradict_each_other_are_refused(self):
+        """No arbitrary order is invented when no order exists. Today the six
+        tables agree; a key added tomorrow could make them disagree, and the
+        failure has to be loud."""
+        with self.assertRaises(ValueError) as capture:
+            sb._derive_total_key_order({"one": ("a", "b"), "two": ("b", "a")})
+        self.assertIn("a", str(capture.exception))
+        self.assertIn("b", str(capture.exception))
+
+    def test_the_bytes_no_longer_depend_on_the_order_of_construction(self):
+        """What `sort_keys=True` actually bought, kept. Reordering two
+        assignments in `build_document` must not change one byte."""
+        document = self._every_shape_of_document()["linked"]
+        shuffled = {key: document[key] for key in reversed(list(document))}
+        shuffled["metadata"] = {
+            key: document["metadata"][key]
+            for key in reversed(list(document["metadata"]))}
+        self.assertEqual(sb.serialise(document), sb.serialise(shuffled))
+
+    def test_the_source_of_the_order_is_named_and_dated(self):
+        """A transcription whose provenance is not written down is a value
+        nobody can re-check. The schema is versioned in no repository here."""
+        self.assertIn("bom-1.7.schema.json", sb.SCHEMA_KEY_ORDER_SOURCE)
+        self.assertIn("2026", sb.SCHEMA_KEY_ORDER_SOURCE)
+
+
+# ---------------------------------------------------------------------------
+# Two objects make up the tissue of the document, and each cost four lines
+# ---------------------------------------------------------------------------
+class TestTheDocumentFoldsItsTwoKeyObjects(_OrderBench):
+
+    def test_a_property_and_a_hash_each_take_one_line(self):
+        document = self._every_shape_of_document()["linked"]
+        text = sb.serialise(document)
+        self.assertIn('{ "name": "unboxr:exclusionPolicy", "value": "none" }',
+                      text)
+        self.assertRegex(text, r'\{ "alg": "SHA-256", "content": "[0-9a-f]+" \}')
+
+    def test_no_object_of_another_shape_is_folded(self):
+        """The criterion is the EXACT set of keys, never a resemblance of
+        shape. The link has three keys and stays where it is."""
+        document = self._every_shape_of_document()["linked"]
+        text = sb.serialise(document)
+        self.assertIn('"url": "' + GOOD_LINK + '",',
+                      [line.strip() for line in text.splitlines()])
+        self.assertNotIn('{ "url"', text)
+        self.assertNotIn('{ "timestamp"', text)
+        self.assertNotIn('{ "type": "file"', text)
+
+    def test_a_two_key_object_whose_values_are_not_scalar_is_left_alone(self):
+        """`serialise` is public and takes an arbitrary document. A window of
+        four lines applied on the set of keys alone would break this one."""
+        document = {"components": [{"name": {"deep": 1}, "value": [1, 2]}]}
+        text = sb.serialise(document)
+        self.assertNotIn('{ "name"', text)
+        self.assertEqual(document, json.loads(text))
+
+    def test_an_empty_container_is_not_a_scalar_either(self):
+        document = {"components": [{"name": "x", "value": {}}]}
+        text = sb.serialise(document)
+        self.assertNotIn('{ "name"', text)
+        self.assertEqual(document, json.loads(text))
+
+    def test_the_folded_text_reads_back_to_exactly_the_same_object(self):
+        """THE TEST THAT MATTERS MOST: it catches any escaping mistake the
+        fold could make. A lone surrogate, a quote, a literal newline and a
+        brace all go through the pass that reformats the text."""
+        awkward = ("odd/" + chr(0xDCFF) + '/"quoted"/line\nbreak/'
+                   "}/{/ends with brace }")
+        document = {"components": [
+            {"name": awkward, "value": awkward},
+            {"alg": "SHA-256", "content": "ab" * 32},
+        ]}
+        text = sb.serialise(document)
+        self.assertTrue(text.isascii())
+        self.assertEqual(document, json.loads(text))
+
+    def test_every_document_this_package_builds_reads_back_unchanged(self):
+        for shape, document in self._every_shape_of_document().items():
+            with self.subTest(shape=shape):
+                self.assertEqual(document, json.loads(sb.serialise(document)))
+
+    def test_the_gain_is_the_one_the_story_measured(self):
+        """Measured on a FLAT zip of two files, which is the recipe the story
+        carries: 189 lines before, 33 foldable objects, 90 lines after."""
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a"),
+                                                    ("b.txt", "b")])
+        _, document = self._document_of(archive)
+        folded = sb.serialise(document).splitlines()
+        unfolded = json.dumps(document, ensure_ascii=True, indent=2).splitlines()
+        foldable = [o for o in self._objects_of(document)
+                    if frozenset(o) in sb.FOLDED_KEY_SETS]
+        self.assertEqual(33, len(foldable))
+        self.assertEqual(189, len(unfolded))
+        self.assertEqual(90, len(folded))
+
+
+# ---------------------------------------------------------------------------
+# The calculated timestamp stops at the second it actually measures
+# ---------------------------------------------------------------------------
+class TestTheCalculatedTimestampStopsAtTheSecond(_OrderBench):
+
+    def test_the_default_timestamp_carries_no_fraction_of_a_second(self):
+        """The microsecond was taken when the document was BUILT, not when it
+        was written, and nothing in an extraction is measured at that scale."""
+        document = self._every_shape_of_document()["plain"]
+        stamp = document["metadata"]["timestamp"]
+        self.assertNotIn(".", stamp)
+        self.assertTrue(stamp.endswith("+00:00"), stamp)
+
+    def test_it_is_a_datetime_and_not_a_truncated_string(self):
+        """A string cut at a fixed offset works until the shape moves, then
+        writes a false date. The value has to survive being read back."""
+        from datetime import datetime, timezone
+        document = self._every_shape_of_document()["plain"]
+        stamp = datetime.fromisoformat(document["metadata"]["timestamp"])
+        self.assertEqual(0, stamp.microsecond)
+        self.assertEqual(timezone.utc, stamp.tzinfo)
+
+    def test_an_injected_timestamp_keeps_its_own_precision(self):
+        """A caller who imposes a value imposes its shape too. Truncating it
+        here would silently rewrite what the caller asked for."""
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
+        prepared = ux.prepare_source(str(archive), workspace=self.dir / "w")
+        precise = "2026-09-13T00:00:00.123456+00:00"
+        document = sb.build_document(
+            prepared.report, prepared.tree, source=str(archive),
+            source_digest=prepared.digest, source_kind=sb.SOURCE_IS_ARCHIVE,
+            timestamp=precise)
+        self.assertEqual(precise, document["metadata"]["timestamp"])
+
+    def test_the_timestamp_is_still_declared_volatile(self):
+        """Reducing a precision does not make a field stable, and nothing here
+        claims it does."""
+        document = self._every_shape_of_document()["plain"]
+        metadata = {p["name"]: p["value"]
+                    for p in document["metadata"]["properties"]}
+        self.assertIn("metadata.timestamp", metadata[sb.VOLATILE_FIELDS])
 
 
 if __name__ == "__main__":

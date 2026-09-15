@@ -291,7 +291,13 @@ class TestPackagingBoundary(unittest.TestCase):
         # 2.0.1 is six correctness fixes from the adversarial code review of
         # 2.0.0 (15 September 2026): no public signature and no observable
         # shape changed on a correct run, so a PATCH version.
-        self.assertEqual("2.0.1", unboxr.__version__)
+        # 2.1.0 is story 14.9: the document became readable -- keys in the
+        # order `bom-1.7.schema.json` declares them instead of alphabetically,
+        # every `property` and every `hash` folded onto one line, and the
+        # calculated timestamp stopped at the second it measures. Nothing the
+        # document SAYS changed, and no public signature moved, so it is not a
+        # major; but the BYTES a caller stores did, which is more than a patch.
+        self.assertEqual("2.1.0", unboxr.__version__)
         source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("importlib.metadata", source)
 

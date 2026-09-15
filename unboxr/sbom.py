@@ -661,7 +661,7 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
         "serialNumber": serial_number or ("urn:uuid:%s" % uuid.uuid4()),
         "version": 1,
         "metadata": {
-            "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
+            "timestamp": timestamp or _now_to_the_second(),
             # WHICH TOOL, AND WHICH VERSION. The set of digests depends on it:
             # which formats this version can open, and what the presence of a
             # 7-Zip binary changes. A document silent on its producer cannot be
@@ -729,18 +729,220 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
     return document
 
 
+# --- The shape of the bytes ---------------------------------------------------
+#
+# WHY ANY OF THIS EXISTS. Until now the document came out with its keys in
+# alphabetical order, because `json.dumps` was asked to sort them. That was
+# never a conformance requirement and never could be: a JSON object is an
+# UNORDERED collection, no JSON schema constrains the order of its keys, and
+# the document validated perfectly well. It was a presentation choice that
+# three places in this repository described without one of them saying why it
+# was switched on.
+#
+# WHAT SORTING ACTUALLY BOUGHT, AND WHY IT IS KEPT. It made the bytes
+# independent of the order `build_document` happens to write its dictionaries
+# in: reordering two assignments there could not change the output. That
+# property is worth keeping, and the table below keeps it -- the order comes
+# from a declaration, not from the code's shape. What replaces the safety net
+# is the test that fails when a key this package produces is missing from the
+# table.
+#
+# WHY A TOTAL ORDER AND NOT A LOOKUP BY TYPE. `serialise` is public and takes
+# an ARBITRARY document; nothing in a bare JSON object says which CycloneDX
+# type it is, so a sort that had to recognise the type at run time would be
+# guessing. The per-type tables are the transcription, and the order actually
+# applied is DERIVED from them by topological sort -- one source of truth, not
+# two. The derivation is only possible because the tables agree with one
+# another, which is a measured fact about today's tables and a test of its own.
+SCHEMA_KEY_ORDER_SOURCE = (
+    "bom-1.7.schema.json, tag 1.7 "
+    "(http://cyclonedx.org/schema/bom-1.7.schema.json), "
+    "key declaration order read on 15 September 2026"
+)
+
+# RESTRICTED TO THE KEYS THIS PACKAGE PRODUCES, deliberately. Transcribing all
+# 19 root keys and all 36 component keys would give a new native field a place
+# without anyone deciding it deserved one -- and the guard that catches an
+# undeclared key is the whole replacement for `sort_keys`. A shorter table
+# makes that guard fire.
+#
+# `version` SITS IN THE COMPONENT TABLE and not only in the root one: the tool
+# inside `metadata.tools.components` is a component carrying `type`, `name` and
+# `version`, and without the entry here nothing would hold `version` after
+# `name`. Measured during implementation; the story's table omitted it.
+SCHEMA_KEY_ORDER = {
+    "bom": ("bomFormat", "specVersion", "serialNumber", "version", "metadata",
+            "components", "externalReferences"),
+    "metadata": ("timestamp", "tools", "component", "properties"),
+    "component": ("type", "bom-ref", "name", "version", "hashes", "properties"),
+    "property": ("name", "value"),
+    "hash": ("alg", "content"),
+    "externalReference": ("url", "comment", "type"),
+}
+
+
+def _derive_total_key_order(tables) -> tuple:
+    """One order over every key name, honouring each per-type order.
+
+    A topological sort, with the ties broken ALPHABETICALLY so that two runs
+    on the same tables give the same order -- an arbitrary tie-break would
+    make the bytes depend on dictionary iteration, which is the very thing
+    this table exists to remove.
+
+    RAISES rather than inventing an order when the tables contradict one
+    another. They agree today; a key added tomorrow could put two of them in
+    conflict, and an order silently invented there would be a presentation
+    nobody chose.
+    """
+    successors = {}
+    remaining = {}
+    for order in tables.values():
+        for key in order:
+            successors.setdefault(key, set())
+            remaining.setdefault(key, 0)
+        for earlier, later in zip(order, order[1:]):
+            if later not in successors[earlier]:
+                successors[earlier].add(later)
+                remaining[later] += 1
+
+    ready = sorted(key for key, count in remaining.items() if count == 0)
+    ordered = []
+    while ready:
+        key = ready.pop(0)
+        ordered.append(key)
+        for following in sorted(successors[key]):
+            remaining[following] -= 1
+            if remaining[following] == 0:
+                ready.append(following)
+        ready.sort()
+
+    if len(ordered) != len(remaining):
+        stuck = sorted(set(remaining) - set(ordered))
+        raise ValueError(
+            "the key order tables contradict one another; no order satisfies "
+            "all of them for: " + ", ".join(stuck))
+    return tuple(ordered)
+
+
+KEY_ORDER = _derive_total_key_order(SCHEMA_KEY_ORDER)
+_KEY_RANK = {key: index for index, key in enumerate(KEY_ORDER)}
+
+# The two objects that make up the tissue of the document. Together they are a
+# third of its lines, four each, for two short strings. Folded onto one line
+# they stay valid, stay readable, and the document loses half its height.
+#
+# THE CRITERION IS THE EXACT SET OF KEYS, never a resemblance of shape: an
+# object that merely happens to have two keys is left alone, because widening
+# this to "any small object" opens a question of threshold that nothing here
+# settles.
+FOLDED_KEY_SETS = (frozenset(("name", "value")), frozenset(("alg", "content")))
+
+
+def _in_key_order(value):
+    """The same document, every object's keys in the declared order.
+
+    A key no table declares is NEVER lost: it comes out after the declared
+    ones, alphabetically. This function is handed documents from outside as
+    well as the one this package builds, and refusing a key it does not
+    recognise would be judging a document it has no business judging.
+    """
+    if isinstance(value, dict):
+        declared = sorted((key for key in value if key in _KEY_RANK),
+                          key=_KEY_RANK.__getitem__)
+        rest = sorted(key for key in value if key not in _KEY_RANK)
+        return {key: _in_key_order(value[key]) for key in declared + rest}
+    if isinstance(value, list):
+        return [_in_key_order(item) for item in value]
+    return value
+
+
+def _folded_window(lines, index):
+    """The one-line form of the object starting at `index`, or nothing.
+
+    WHY A PASS OVER THE TEXT AND NOT AN ENCODER OF OUR OWN. Escaping is where
+    a hand-written encoder dies, and this package depends on the standard
+    one's escaping precisely (`ensure_ascii=True` exists so that a file name
+    carrying lone surrogates cannot cost the whole document). The fold
+    therefore runs on the text `json.dumps` has ALREADY produced.
+
+    WHY THAT IS SAFE HERE, and it is not safe in general: after `json.dumps`,
+    a LITERAL newline can never appear inside a string -- it is escaped to
+    `\\n` -- so a line-by-line pass cannot mistake a value for structure.
+
+    THE SET OF KEYS IS NOT ENOUGH ON ITS OWN. Both values must be scalar and
+    complete on their own line, which is checked by reading the two lines back
+    as JSON. A caller can hand `serialise` an object whose two keys carry a
+    nested list, and a four-line window applied on the key names alone would
+    fold it into broken text.
+    """
+    if index + 3 >= len(lines):
+        return None
+    opening, first, second, closing = lines[index:index + 4]
+    if not opening.rstrip().endswith("{"):
+        return None
+    if not closing.lstrip().startswith("}"):
+        return None
+    body = first.strip() + " " + second.strip()
+    try:
+        pair = json.loads("{" + body + "}")
+    except ValueError:
+        return None
+    if len(pair) != 2 or frozenset(pair) not in FOLDED_KEY_SETS:
+        return None
+    if any(isinstance(item, (dict, list)) for item in pair.values()):
+        return None
+    return opening.rstrip() + " " + body + " " + closing.lstrip()
+
+
+def _fold_two_key_objects(text: str) -> str:
+    """Every property and every hash on one line, the rest untouched."""
+    lines = text.split("\n")
+    folded = []
+    index = 0
+    while index < len(lines):
+        window = _folded_window(lines, index)
+        if window is None:
+            folded.append(lines[index])
+            index += 1
+        else:
+            folded.append(window)
+            index += 4
+    return "\n".join(folded)
+
+
+def _now_to_the_second() -> str:
+    """The moment the document is built, to the second it actually measures.
+
+    `isoformat()` alone offers six decimals taken when the document is BUILT,
+    not when it is written, and nothing in an extraction is measured at that
+    scale. RFC 3339 makes the fraction optional, so the shorter form is just
+    as valid -- and it stops the document asserting a precision nothing backs.
+    NOT a string truncation: that works until the shape moves, then writes a
+    false date.
+    """
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
 def serialise(document) -> str:
     """The document as text, with every parameter that affects the bytes fixed.
 
-    `sort_keys` and `indent` are stated rather than defaulted, because a
-    default that changed would change the bytes. `ensure_ascii` is TRUE, and
-    that is a decision with a consequence worth naming: a file name carrying
-    lone surrogates -- which a POSIX file system can produce and which no
-    encoder can represent -- is escaped rather than raising, so one undecodable
-    name cannot cost the whole document. The price is that non-ASCII names are
-    escaped in the output; they remain exact, and they round-trip.
+    `indent` is stated rather than defaulted, because a default that changed
+    would change the bytes. `ensure_ascii` is TRUE, and that is a decision with
+    a consequence worth naming: a file name carrying lone surrogates -- which a
+    POSIX file system can produce and which no encoder can represent -- is
+    escaped rather than raising, so one undecodable name cannot cost the whole
+    document. The price is that non-ASCII names are escaped in the output; they
+    remain exact, and they round-trip.
+
+    `sort_keys` IS NOT PASSED, AND MUST NOT BE. The order of the keys is
+    imposed by `_in_key_order` from a declared table; asking `json.dumps` to
+    sort as well would throw that order away and put the keys back in
+    alphabetical order, silently. What sorting used to guarantee -- bytes
+    independent of the order `build_document` writes its dictionaries in -- the
+    table guarantees instead.
     """
-    return json.dumps(document, ensure_ascii=True, indent=2, sort_keys=True)
+    text = json.dumps(_in_key_order(document), ensure_ascii=True, indent=2)
+    return _fold_two_key_objects(text)
 
 
 def write_document(document, destination) -> None:

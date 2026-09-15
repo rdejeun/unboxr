@@ -299,16 +299,22 @@ already providing the field:
 ```json
 "externalReferences": [
   {
+    "url": "urn:cdx:3e671687-395b-41f5-a30f-a58921a69b79/1",
     "comment": "The BOM this document belongs to, as supplied ...",
-    "type": "bom",
-    "url": "urn:cdx:3e671687-395b-41f5-a30f-a58921a69b79/1"
+    "type": "bom"
   }
 ]
 ```
 
-(Keys above are alphabetical, matching what the tool actually writes --
-`serialise()` sorts keys, so a real document never reads `type`, `url`,
-`comment` in that order.)
+(Keys above are in the order the tool actually writes them. `serialise()`
+emits each object's keys in the order `bom-1.7.schema.json` declares them --
+which for an external reference is `url`, `comment`, `type` -- rather than
+alphabetically. No JSON schema constrains the order of keys, so this is a
+choice of readability and not a point of conformance; what it does guarantee
+is that the bytes do not depend on the order the code happens to build its
+dictionaries in. A `property` and a `hash` are each folded onto **one line**,
+which is what keeps a document of a few thousand files readable:
+`{ "name": "unboxr:digestState", "value": "computed" }`.)
 
 **The URN is handed over, never composed here.** How you number your own
 documents is not `unboxr`'s business. The shape is `urn:cdx:<uuid>/<version>`,

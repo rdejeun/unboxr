@@ -128,7 +128,23 @@ from .sbom import (
 # instead of a literal `False` duplicating its own guard, and its second
 # `parser.error` no longer falls through unconditionally. A PATCH version:
 # nothing that existed changed shape, and nothing was added.
-__version__ = "2.0.1"
+# 2.1.0: the document became readable. Its keys come out in the order
+# `bom-1.7.schema.json` declares them rather than alphabetically, every
+# `property` and every `hash` is folded onto ONE line, and the calculated
+# timestamp stops at the second it actually measures instead of offering six
+# decimals taken when the document was built. NOTHING THE DOCUMENT SAYS
+# CHANGED: same keys, same values, same components, and reading the text back
+# gives the object it always gave -- only its presentation moved, and a
+# document is half as tall for it (measured on a flat zip of two files: 189
+# lines down to 90). MINOR AND NOT A PATCH, for a reason that is not a new
+# feature: the BYTES a caller stores change, so a consumer comparing a
+# document written by 2.0.1 with one written here finds them different for a
+# reason that has nothing to do with the corpus. Not a major either -- no
+# public signature moved, no name left `__all__`, and the published table of
+# property names is untouched. The order tables are module-level in
+# `unboxr.sbom` and deliberately NOT exported: they are how this package
+# presents a document, not part of what it promises about one.
+__version__ = "2.1.0"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
