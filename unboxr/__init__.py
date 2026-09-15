@@ -132,19 +132,55 @@ from .sbom import (
 # `bom-1.7.schema.json` declares them rather than alphabetically, every
 # `property` and every `hash` is folded onto ONE line, and the calculated
 # timestamp stops at the second it actually measures instead of offering six
-# decimals taken when the document was built. NOTHING THE DOCUMENT SAYS
-# CHANGED: same keys, same values, same components, and reading the text back
-# gives the object it always gave -- only its presentation moved, and a
-# document is half as tall for it (measured on a flat zip of two files: 189
-# lines down to 90). MINOR AND NOT A PATCH, for a reason that is not a new
-# feature: the BYTES a caller stores change, so a consumer comparing a
-# document written by 2.0.1 with one written here finds them different for a
-# reason that has nothing to do with the corpus. Not a major either -- no
-# public signature moved, no name left `__all__`, and the published table of
-# property names is untouched. The order tables are module-level in
-# `unboxr.sbom` and deliberately NOT exported: they are how this package
-# presents a document, not part of what it promises about one.
-__version__ = "2.1.0"
+# decimals taken when the document was built. SAME KEYS AND SAME COMPONENTS,
+# and reading the text back gives the object it always gave. ONE VALUE DOES
+# CHANGE, and it is the timestamp: fewer digits, floored, so the document now
+# names an instant up to a second earlier than the build. Writing "same
+# values" here, two sentences after announcing the change, would be this
+# ledger contradicting itself inside one entry -- the exact defect it exists
+# to prevent. A document is half as tall for the rest (measured on a flat zip
+# of two files: 189 lines down to 90).
+# MINOR AND NOT A PATCH: the BYTES a caller stores change, so a consumer
+# comparing a document written by 2.0.1 with one written here finds them
+# different for a reason that has nothing to do with the corpus.
+# AND MINOR RATHER THAN MAJOR, WHICH IS THE HARDER CALL AND DESERVES THE REAL
+# ARGUMENT. "No public signature moved" is NOT that argument: it is narrower
+# than the rule 2.0.0 applied to itself, and by 2.0.0's own wording -- every
+# caller gets a different result with nothing to opt into -- output that
+# changes for every caller would be a major. What settles it is that byte
+# identity was never promised ACROSS versions: the determinism contract
+# (README, "The extraction document is not a fifth guarantee") already scopes
+# comparison to one machine under one version of `unboxr`, precisely because
+# the document carries what THAT machine can open. A consumer who compared
+# across versions was relying on something this package declined to promise.
+# THE COST, SO THAT NOBODY HAS TO DISCOVER IT: `serialise` is about 7.5x
+# slower and peaks at 4-5x the memory (20 000 components: 124 ms and 22 MB
+# become 936 ms and 88 MB). Three passes now stack -- ordering, encoding,
+# folding -- where there was one. Accepted rather than optimised: the fold's
+# safety argument rests on the pass being simple enough to check by reading
+# it, and the README scopes this document to "a few thousand files".
+# The order tables are module-level in `unboxr.sbom` and deliberately NOT
+# exported: they are how this package presents a document, not part of what
+# it promises about one.
+# 2.1.1: ten fixes from the adversarial code review of 2.1.0 (15 September
+# 2026), none of which changes what the document says. THREE ARE BEHAVIOUR,
+# and all three restore or complete what 2.1.0 meant to do: a dictionary held
+# in a TUPLE is now ordered like any other (`json.dumps` encodes a tuple as an
+# array, so skipping it left exactly the construction-order dependence the key
+# table exists to remove); a CIRCULAR document raises `ValueError: Circular
+# reference detected` again, as it did before the ordering pass existed,
+# instead of exhausting the stack; and `build_document` writes the BOM link in
+# the schema's order, so the dictionary it RETURNS and the text `serialise`
+# produces no longer disagree. The rest are diagnostics and prose: the
+# contradiction message now names the cycle instead of every key downstream of
+# it, a table written as a bare string is refused rather than read one letter
+# per key, the fold refuses `NaN` and the infinities rather than claiming it
+# validated JSON, the order tables are read-only, the depth ceiling and the
+# timestamp's loss of discriminating power are written down, and this ledger
+# stopped saying "same values" one sentence after announcing that the
+# timestamp changed. A PATCH version: no public signature moved, and no
+# document this package builds comes out differently.
+__version__ = "2.1.1"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 

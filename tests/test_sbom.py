@@ -1010,7 +1010,16 @@ class TestTheDocumentIsDeterministic(_Bench):
         here for exactly the reason the parameters are.
         """
         import inspect
-        source = inspect.getsource(sb.serialise)
+        # THE DOCSTRING IS NOT THE CODE. It argues at length about
+        # `sort_keys`, and a maintainer writing `# never pass sort_keys=True`
+        # as a warning -- the most natural thing to write there -- would make
+        # the guard below fail for the exact opposite of its purpose.
+        whole = inspect.getsource(sb.serialise)
+        halves = whole.split('"""')
+        source = halves[0] + "".join(halves[2:])
+        self.assertNotIn("sort_keys", source,
+                         "the docstring was not stripped, so the guard "
+                         "below would be inspecting prose")
         for parameter in ("ensure_ascii=True", "indent=2"):
             with self.subTest(parameter=parameter):
                 self.assertIn(parameter, source)
@@ -2163,8 +2172,22 @@ class _OrderBench(_Bench):
             prepared.report, None, source=str(archive),
             source_digest=prepared.digest, source_kind=sb.SOURCE_IS_ARCHIVE)
 
+        # A FILE WHOSE DIGEST COULD NOT BE READ. The subject of a directory
+        # document already gives a `metadata.component` with no `hashes`, but
+        # not a COMPONENT without one, and the two are different objects with
+        # different tables. Same substitution the read-failure test uses.
+        original = sb._digest_of_existing_file
+        sb._digest_of_existing_file = lambda path: None
+        try:
+            unhashed = sb.build_document(
+                prepared.report, prepared.tree, source=str(archive),
+                source_digest=prepared.digest,
+                source_kind=sb.SOURCE_IS_ARCHIVE)
+        finally:
+            sb._digest_of_existing_file = original
+
         return {"linked": linked, "plain": plain, "directory": directory,
-                "failed": failed}
+                "failed": failed, "unhashed": unhashed}
 
     def _keys_of(self, value, found=None):
         found = set() if found is None else found
@@ -2176,6 +2199,21 @@ class _OrderBench(_Bench):
             for nested in value:
                 self._keys_of(nested, found)
         return found
+
+    def _every_dict_reversed(self, value):
+        """The same document with EVERY object's keys written backwards.
+
+        Reversing only the root and `metadata` would prove almost nothing:
+        those two are already in the schema's order, and the objects
+        `build_document` writes out of order -- components, properties,
+        hashes, the link -- would never be touched.
+        """
+        if isinstance(value, dict):
+            return {key: self._every_dict_reversed(value[key])
+                    for key in reversed(list(value))}
+        if isinstance(value, list):
+            return [self._every_dict_reversed(item) for item in value]
+        return value
 
     def _objects_of(self, value, found=None):
         found = [] if found is None else found
@@ -2213,6 +2251,9 @@ class TestTheKeysComeOutInTheOrderOfTheSchema(_OrderBench):
         self.assertNotIn("externalReferences", self._keys_of(shapes["plain"]))
         subject = shapes["directory"]["metadata"]["component"]
         self.assertNotIn("hashes", subject)
+        without = [c for c in shapes["unhashed"]["components"]
+                   if "hashes" not in c]
+        self.assertTrue(without, "no component without a digest in the corpus")
 
     def test_each_object_carries_its_keys_in_the_order_of_its_type(self):
         """Read from the schema, not deduced: `hashes` comes BEFORE
@@ -2239,6 +2280,23 @@ class TestTheKeysComeOutInTheOrderOfTheSchema(_OrderBench):
                          list(reread["metadata"]["properties"][0]))
         self.assertEqual(["alg", "content"],
                          list(reread["components"][0]["hashes"][0]))
+
+    def test_each_object_matches_a_declared_table_and_obeys_it(self):
+        """`KEY_ORDER` IS NOT ENOUGH TO CHECK AGAINST. A key transcribed into
+        the WRONG per-type table still lands in the derived total order, so
+        the guard above would pass while a component came out misordered.
+        This one holds each object against the table its key set belongs to.
+        """
+        for shape, document in self._every_shape_of_document().items():
+            for obj in self._objects_of(json.loads(sb.serialise(document))):
+                keys = list(obj)
+                tables = [order for order in sb.SCHEMA_KEY_ORDER.values()
+                          if set(keys) <= set(order)]
+                with self.subTest(shape=shape, keys=tuple(keys)):
+                    self.assertTrue(
+                        tables, "no declared table covers this key set")
+                    for order in tables:
+                        self.assertEqual([k for k in order if k in obj], keys)
 
     def test_a_key_no_table_declares_is_never_lost(self):
         """It comes out AFTER the declared keys, alphabetically. Losing it, or
@@ -2270,11 +2328,60 @@ class TestTheKeysComeOutInTheOrderOfTheSchema(_OrderBench):
         """What `sort_keys=True` actually bought, kept. Reordering two
         assignments in `build_document` must not change one byte."""
         document = self._every_shape_of_document()["linked"]
-        shuffled = {key: document[key] for key in reversed(list(document))}
-        shuffled["metadata"] = {
-            key: document["metadata"][key]
-            for key in reversed(list(document["metadata"]))}
-        self.assertEqual(sb.serialise(document), sb.serialise(shuffled))
+        self.assertEqual(sb.serialise(document),
+                         sb.serialise(self._every_dict_reversed(document)))
+
+    def test_a_dictionary_held_in_a_tuple_is_ordered_like_any_other(self):
+        """`json.dumps` encodes a tuple as an array exactly as it encodes a
+        list, so a dictionary inside one IS written. Skipping it would leave
+        its keys in the order the caller built them -- the one property this
+        table exists to remove."""
+        built_one_way = sb.serialise(
+            {"components": ({"zzz": 1, "aaa": 2, "name": "x"},)})
+        built_the_other = sb.serialise(
+            {"components": ({"name": "x", "aaa": 2, "zzz": 1},)})
+        self.assertEqual(built_one_way, built_the_other)
+        self.assertEqual(
+            sb.serialise({"components": [{"name": "x", "aaa": 2, "zzz": 1}]}),
+            built_one_way)
+
+    def test_a_circular_document_raises_the_error_it_always_raised(self):
+        """Before the ordering pass existed, `json.dumps` caught the cycle
+        itself and raised `ValueError: Circular reference detected`. Walking
+        the document first would exhaust the stack instead and hand the caller
+        a `RecursionError` -- a different exception, and a message that never
+        names the cycle."""
+        through_a_list = {"components": []}
+        through_a_list["components"].append(through_a_list)
+        onto_itself = {}
+        onto_itself["metadata"] = onto_itself
+        for document in (through_a_list, onto_itself):
+            with self.subTest(document=type(document["components"][0])
+                              if "components" in document else "self"):
+                with self.assertRaises(ValueError) as capture:
+                    sb.serialise(document)
+                self.assertIn("Circular reference", str(capture.exception))
+
+    def test_a_deeply_nested_document_still_serialises(self):
+        """The ordering pass spends a Python frame per level before the C
+        encoder runs, so the ceiling is lower than 2.0.1's. The exact figure
+        depends on the interpreter's recursion limit and is named in
+        `_in_key_order`; what is pinned here is that ordinary depths -- far
+        beyond anything a file tree produces -- are untouched."""
+        deep = {"name": "leaf"}
+        for _ in range(200):
+            deep = {"components": [deep]}
+        self.assertEqual(deep, json.loads(sb.serialise(deep)))
+
+    def test_a_value_json_cannot_represent_is_never_folded(self):
+        """`json.loads` accepts `NaN` and the infinities, and `json.dumps`
+        emits them: the document was already unreadable by a strict reader,
+        and that is older than this pass. What must not happen is a guard that
+        announces it read the pair back as JSON and folded one anyway."""
+        text = sb.serialise(
+            {"components": [{"name": "x", "value": float("nan")}]})
+        self.assertNotIn('{ "name"', text)
+        self.assertIn("NaN", text)
 
     def test_the_source_of_the_order_is_named_and_dated(self):
         """A transcription whose provenance is not written down is a value
@@ -2349,9 +2456,13 @@ class TestTheDocumentFoldsItsTwoKeyObjects(_OrderBench):
         unfolded = json.dumps(document, ensure_ascii=True, indent=2).splitlines()
         foldable = [o for o in self._objects_of(document)
                     if frozenset(o) in sb.FOLDED_KEY_SETS]
-        self.assertEqual(33, len(foldable))
-        self.assertEqual(189, len(unfolded))
-        self.assertEqual(90, len(folded))
+        recipe = ("measured on the FLAT two-file zip of the story's recipe; "
+                  "a document with a link measures 196 -> 97. If a property "
+                  "was added to the document, re-measure and update all three "
+                  "numbers here and in the story -- do not relax the test")
+        self.assertEqual(33, len(foldable), recipe)
+        self.assertEqual(189, len(unfolded), recipe)
+        self.assertEqual(90, len(folded), recipe)
 
 
 # ---------------------------------------------------------------------------

@@ -314,7 +314,13 @@ choice of readability and not a point of conformance; what it does guarantee
 is that the bytes do not depend on the order the code happens to build its
 dictionaries in. A `property` and a `hash` are each folded onto **one line**,
 which is what keeps a document of a few thousand files readable:
-`{ "name": "unboxr:digestState", "value": "computed" }`.)
+`{ "name": "unboxr:digestState", "value": "computed" }`.
+
+`serialise()` is public and will take a document it did not build. A key no
+table declares is never dropped and never refused -- it comes out **after**
+the declared keys, in alphabetical order -- so "the order the schema declares"
+is exact for the documents this package produces and a best effort for
+anything else.)
 
 **The URN is handed over, never composed here.** How you number your own
 documents is not `unboxr`'s business. The shape is `urn:cdx:<uuid>/<version>`,

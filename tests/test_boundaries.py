@@ -297,7 +297,13 @@ class TestPackagingBoundary(unittest.TestCase):
         # calculated timestamp stopped at the second it measures. Nothing the
         # document SAYS changed, and no public signature moved, so it is not a
         # major; but the BYTES a caller stores did, which is more than a patch.
-        self.assertEqual("2.1.0", unboxr.__version__)
+        # 2.1.1 is ten fixes from the adversarial review of 2.1.0: three of
+        # behaviour (tuples ordered like any other container, circular
+        # documents raising ValueError again, the BOM link written in schema
+        # order) and seven of diagnostics and prose. No public signature
+        # moved and no document this package builds comes out differently, so
+        # a PATCH version.
+        self.assertEqual("2.1.1", unboxr.__version__)
         source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("importlib.metadata", source)
 

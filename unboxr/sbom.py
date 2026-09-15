@@ -49,6 +49,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from urllib.parse import urlparse
 
 from .extraction import (
@@ -721,10 +722,15 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
     # restatement of the format, and relaxing it as redundant would be a
     # mistake.
     if linked_bom is not None:
+        # WRITTEN IN THE SCHEMA'S ORDER, not merely serialised into it.
+        # `build_document` is public and returns a plain dictionary: a caller
+        # who runs their own `json.dumps` on it -- the only way to get the
+        # document as an object -- would otherwise get an order this package
+        # no longer uses anywhere. It costs nothing to agree with ourselves.
         document["externalReferences"] = [{
-            "type": "bom",
             "url": linked_bom,
             "comment": LINKED_BOM_COMMENT,
+            "type": "bom",
         }]
     return document
 
@@ -793,10 +799,30 @@ def _derive_total_key_order(tables) -> tuple:
     another. They agree today; a key added tomorrow could put two of them in
     conflict, and an order silently invented there would be a presentation
     nobody chose.
+
+    AND IT RAISES AT IMPORT, WHICH IS DELIBERATE. `KEY_ORDER` is derived at
+    module level, so a contradiction makes `import unboxr` fail -- the
+    extractor and the command line included, for a fault in a table that only
+    governs presentation. That reads like a wide blast radius and is not one:
+    `SCHEMA_KEY_ORDER` is a literal of this source, never anything a caller
+    supplies, so the contradiction can exist only in a working tree where
+    someone has just mistyped it, and the test suite is red at the same
+    instant. It cannot reach an installed package. Deferring the derivation
+    to the first `serialise` would move the failure later than its cause for
+    no case that can actually happen.
     """
     successors = {}
     remaining = {}
-    for order in tables.values():
+    for kind, order in tables.items():
+        # A TABLE IS A SEQUENCE OF KEY NAMES, AND A BARE STRING IS NOT ONE.
+        # `("alg")` instead of `("alg",)` is a missing comma, and Python reads
+        # it as the string "alg" -- which iterates into three one-letter keys
+        # and leaves `alg` undeclared. These tables are transcribed by hand
+        # from a schema, which is exactly where that typo lives.
+        if isinstance(order, str):
+            raise TypeError(
+                "the key order table for %r must be a sequence of key names, "
+                "not a string: %r (a missing comma?)" % (kind, order))
         for key in order:
             successors.setdefault(key, set())
             remaining.setdefault(key, 0)
@@ -817,13 +843,41 @@ def _derive_total_key_order(tables) -> tuple:
         ready.sort()
 
     if len(ordered) != len(remaining):
-        stuck = sorted(set(remaining) - set(ordered))
         raise ValueError(
-            "the key order tables contradict one another; no order satisfies "
-            "all of them for: " + ", ".join(stuck))
+            "no key order satisfies every table; the keys in conflict are: "
+            + " -> ".join(_first_cycle(successors, set(remaining) - set(ordered))))
     return tuple(ordered)
 
 
+def _first_cycle(successors, stuck) -> list:
+    """One cycle among the stuck keys, as the path that closes it.
+
+    NAMING EVERY STUCK KEY WOULD BE NAMING MOSTLY INNOCENTS. The keys left
+    unplaced are the cycle AND everything merely downstream of it: on a real
+    mistranscription that is ten keys, of which two are in conflict. The
+    maintainer this message exists for would be handed eight bystanders to
+    check. Walking the successors from a stuck key finds the cycle itself.
+    """
+    for start in sorted(stuck):
+        path = [start]
+        seen = {start}
+        while True:
+            following = sorted(k for k in successors[path[-1]] if k in stuck)
+            if not following:
+                break
+            step = following[0]
+            if step in seen:
+                return path[path.index(step):] + [step]
+            path.append(step)
+            seen.add(step)
+    return sorted(stuck)
+
+
+# READ-ONLY ON PURPOSE. `KEY_ORDER` is computed once, here, so mutating the
+# tables afterwards would change nothing at all -- in silence. A mapping that
+# cannot be written says "this is the transcription, not a knob" instead of
+# merely intending it.
+SCHEMA_KEY_ORDER = MappingProxyType(SCHEMA_KEY_ORDER)
 KEY_ORDER = _derive_total_key_order(SCHEMA_KEY_ORDER)
 _KEY_RANK = {key: index for index, key in enumerate(KEY_ORDER)}
 
@@ -838,22 +892,55 @@ _KEY_RANK = {key: index for index, key in enumerate(KEY_ORDER)}
 FOLDED_KEY_SETS = (frozenset(("name", "value")), frozenset(("alg", "content")))
 
 
-def _in_key_order(value):
+def _in_key_order(value, _enclosing=()):
     """The same document, every object's keys in the declared order.
 
     A key no table declares is NEVER lost: it comes out after the declared
     ones, alphabetically. This function is handed documents from outside as
     well as the one this package builds, and refusing a key it does not
     recognise would be judging a document it has no business judging.
+
+    TUPLES ARE WALKED, NOT LEFT ALONE. `json.dumps` encodes a tuple as an
+    array exactly as it encodes a list, so a dictionary held in a tuple IS
+    written -- and skipping it here would leave its keys in the order the
+    caller built them in, which is the ONE property this whole table exists
+    to remove. Descending turns it into a list, which changes nothing in the
+    output: both encode to the same array.
+
+    A CIRCULAR DOCUMENT RAISES THE ERROR IT ALWAYS RAISED. Before this pass
+    existed, `json.dumps` detected the cycle itself and raised
+    `ValueError("Circular reference detected")`. Walking the document first
+    would instead exhaust the stack and hand a caller a `RecursionError` --
+    a different exception, uncatchable by the code that used to catch the
+    first, and a message that never names the cycle. `_enclosing` carries
+    the identities on the current path, so the diagnosis survives.
+
+    DEPTH CEILING, AND IT IS LOWER THAN IT WAS. This pass spends a Python
+    frame per level before the C encoder runs, so the deepest document
+    `serialise` accepts is roughly a THIRD of what 2.0.1 accepted -- about
+    994 levels against 2998 at the default recursion limit. No extraction
+    document comes close: a file tree is wide, not deep. It is written down
+    rather than fixed because an iterative rewrite would cost the legibility
+    that makes the escaping argument in `_folded_window` checkable at all.
     """
+    if isinstance(value, (dict, list, tuple)):
+        if id(value) in _enclosing:
+            raise ValueError("Circular reference detected")
+        _enclosing = _enclosing + (id(value),)
     if isinstance(value, dict):
         declared = sorted((key for key in value if key in _KEY_RANK),
                           key=_KEY_RANK.__getitem__)
         rest = sorted(key for key in value if key not in _KEY_RANK)
-        return {key: _in_key_order(value[key]) for key in declared + rest}
-    if isinstance(value, list):
-        return [_in_key_order(item) for item in value]
+        return {key: _in_key_order(value[key], _enclosing)
+                for key in declared + rest}
+    if isinstance(value, (list, tuple)):
+        return [_in_key_order(item, _enclosing) for item in value]
     return value
+
+
+def _not_json(constant):
+    """`NaN`, `Infinity` and `-Infinity` are not JSON, whatever `json` allows."""
+    raise ValueError("not a JSON value: " + constant)
 
 
 def _folded_window(lines, index):
@@ -874,17 +961,26 @@ def _folded_window(lines, index):
     as JSON. A caller can hand `serialise` an object whose two keys carry a
     nested list, and a four-line window applied on the key names alone would
     fold it into broken text.
+
+    AND "READ BACK AS JSON" MEANS JSON, not what `json.loads` happens to
+    tolerate. It accepts `NaN`, `Infinity` and `-Infinity` by default, which
+    `json.dumps` emits and no strict reader accepts. That invalidity is older
+    than this pass and is not this pass's to fix; what would be new, and
+    wrong, is a guard that ANNOUNCES it verified JSON and then folded one of
+    them onto a line. `parse_constant` refuses them, so such an object is left
+    expanded, exactly as visibly broken as it was before.
     """
-    if index + 3 >= len(lines):
+    # THE CHEAP TEST FIRST. This runs once per line of the document, and
+    # slicing before it allocated a four-element list for every line, the
+    # overwhelming majority of which open nothing.
+    if index + 3 >= len(lines) or not lines[index].rstrip().endswith("{"):
         return None
     opening, first, second, closing = lines[index:index + 4]
-    if not opening.rstrip().endswith("{"):
-        return None
     if not closing.lstrip().startswith("}"):
         return None
     body = first.strip() + " " + second.strip()
     try:
-        pair = json.loads("{" + body + "}")
+        pair = json.loads("{" + body + "}", parse_constant=_not_json)
     except ValueError:
         return None
     if len(pair) != 2 or frozenset(pair) not in FOLDED_KEY_SETS:
@@ -913,12 +1009,23 @@ def _fold_two_key_objects(text: str) -> str:
 def _now_to_the_second() -> str:
     """The moment the document is built, to the second it actually measures.
 
-    `isoformat()` alone offers six decimals taken when the document is BUILT,
-    not when it is written, and nothing in an extraction is measured at that
-    scale. RFC 3339 makes the fraction optional, so the shorter form is just
-    as valid -- and it stops the document asserting a precision nothing backs.
-    NOT a string truncation: that works until the shape moves, then writes a
-    false date.
+    THE COMPLAINT THIS ANSWERS, and the one it does not. `isoformat()` offers
+    six decimals that nothing in an extraction measures: that is a precision
+    with no measurement behind it, and dropping it is the fix. It does NOT
+    make the timestamp the moment the document was written -- it is still the
+    moment it was built, merely no longer pretending to microseconds about it.
+    Those are two distinct defects and only the first is addressed here.
+
+    RFC 3339 makes the fraction optional, so the shorter form is just as
+    valid. NOT a string truncation: that works until the shape moves, then
+    writes a false date.
+
+    TWO DOCUMENTS BUILT IN THE SAME SECOND NOW CARRY THE SAME TIMESTAMP,
+    where they used to differ by microseconds. Nothing in this package uses
+    the field to tell two documents apart -- `serialNumber` does that, and
+    both are declared volatile -- but a consumer that leaned on the timestamp
+    for identity would lose a factor of a million, so it is said here rather
+    than found out.
     """
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
