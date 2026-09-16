@@ -167,7 +167,7 @@ class TestTraversalOrder(_Bench):
         envelope.write_bytes(b"7z\xbc\xaf\x27\x1c" + b"\x00" * 16)
         dest = self.dir / "out"
 
-        def fake_7zip(archive_path, target, binary):
+        def fake_7zip(archive_path, target, binary, report=None):
             target.mkdir(parents=True, exist_ok=True)
             for name in ("z_last.tar", "a_first.tar", "m_middle.tar"):
                 self._tar(target / "nested" / name,

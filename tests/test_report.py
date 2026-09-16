@@ -63,13 +63,17 @@ class TestTheVocabularyOfCauses(unittest.TestCase):
 
     def test_the_count_of_causes_is_asserted_here_and_not_in_a_test_name(self):
         """A figure engraved in a test name never goes red, it lies.
-        Nineteen causes: 6 amputations already named by the command, 8
+        Twenty-two causes: 6 amputations already named by the command, 8
         declared non-amputations (the eighth,
         `downloaded_copy_kept_alongside_the_tree`, added by story 14.8 of the
         upstream project, crypto-scan), the corpus widening, and the 4 an
         earlier story added -- two containers opened, two refusals for want
-        of a capability."""
-        self.assertEqual(19, len(report.CAUSE_TEXTS))
+        of a capability. The last three arrived with 3.0: they say a listed path
+        carries no digest and why, and they were the values of a
+        `digestState` property until a document that reports only the
+        abnormal stopped having a place for the fourth, "it was computed".
+        """
+        self.assertEqual(22, len(report.CAUSE_TEXTS))
         self.assertEqual(8, sum(1 for kind in report.CAUSE_KINDS.values()
                                 if kind == report.NOT_OPENED))
 

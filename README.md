@@ -235,8 +235,30 @@ It holds one component per path:
 - every container that was **not opened**, with its cause -- code and English
   text, as two separate properties.
 
-It attests the presence and the digest of what it lists, and **nothing about
-what is absent from it**. It renders no verdict of any kind.
+It attests the presence and the digest of what it lists. It renders no verdict
+of any kind.
+
+**On the corpus, the oracle is positive only**: the document says nothing about
+what was inside a container nobody opened.
+
+**On the anomalies, it promises the opposite** -- every abnormal event this
+package can observe is written, so a component with no properties is not a
+silence: it says nothing abnormal happened to that path. That promise is what
+makes the omissions above readable, and the two are one decision.
+
+**The promise is bounded by what can be observed at a boundary this package
+crosses**, and the bound is named here rather than left to be assumed. Three
+things fall outside it: an archive whose library reads it "successfully" while
+silently returning fewer members than it holds; an encrypted entry an external
+7-Zip skips while returning success; a file name the operating system refuses
+to materialise. The gap is narrow and nameable, which is what makes the promise
+worth making -- a detector's gap is neither.
+
+**No exclusion policy.** `unboxr` has none -- not `__pycache__`, not `.git`, not
+`node_modules`. Whether those belong in an analysed corpus is the consumer's
+policy, applied after extraction. Until 3.0 the document repeated that in a
+property of its own, on every document, always with the same value; a constant
+says nothing per document and belongs here.
 
 The library form returns a structure and writes nothing:
 
@@ -250,47 +272,63 @@ unboxr.write_document(document, Path("sbom.json"))
 
 ### The properties it carries
 
-Every one of them is emitted on **every** document, including when the value is
-not computable -- in which case the non-computable state is written out. A
-property that appeared only in the favourable case would read, by its absence,
-as *not applicable* rather than *not determined*.
+**A property is written only when something abnormal happened.** A component to
+which nothing happened carries none at all, and the `properties` key is absent
+rather than empty.
+
+That rule REVERSED in 3.0, and the reversal is the whole release. Until then
+every property was emitted on every component -- a cause code reading
+`no_entry`, seven hundred times over an ordinary archive -- because an omission would have
+read as *not applicable* rather than *not determined*. That reasoning holds
+under a positive-only oracle, where a silence cannot be told apart from an
+unasked question. It stops holding the moment the document promises that every
+anomaly it can observe is written: the omission then asserts something precise,
+*nothing abnormal happened to this path*, and writing it out adds nothing.
 
 Native CycloneDX fields -- `hashes`, `type`, `name`, `metadata.tools` -- are
 used as they are and never wrapped in a property.
 
-On `metadata.properties`, what is true of the run:
+On `metadata.properties`, one name, and it is on every document:
 
 | Name | Value |
 |---|---|
-| `unboxr:documentScope` | what this document does and does not attest |
-| `unboxr:oracleReminder` | absence of a finding is never evidence of absence |
-| `unboxr:volatileFields` | the fields not promised from one run to the next |
-| `unboxr:exclusionPolicy` | `none` -- see below |
-| `unboxr:sourceKind` | `archive` / `directory` / `undetermined` |
 | `unboxr:extractionOutcome` | `complete` / `failed` |
-| `unboxr:sevenZipAvailable` | `true` / `false` |
-| `unboxr:recognisedExtensions` | how many extensions this version recognises |
-| `unboxr:extensionsNeedingSevenZip` | how many of those need the binary |
-| `unboxr:depthReached` / `unboxr:depthLimit` | two numbers, or `not_applicable` |
-| `unboxr:containersNotOpened` | the size of the amputation |
-| `unboxr:filesWithoutDigest` | components whose digest state is not `computed` |
 
-On each component, what is true of one path:
+It is the flag that says whether the promise above **holds for this document**.
+A run that died partway could not observe the anomalies it never reached, and
+without it a truncated document would be indistinguishable from a clean one --
+its silence reading as *nothing abnormal*.
+
+On a component, when something abnormal is true of it:
 
 | Name | Value |
 |---|---|
-| `unboxr:causeCode` | the cause code or codes, or `no_entry` |
-| `unboxr:causeText` | their English texts, in the same order |
-| `unboxr:digestState` | `computed` / `read_failed` / `not_a_file` / `symlink_not_followed` |
-| `unboxr:nestingLevel` | `0`..`n`, or `unknown` |
-| `unboxr:parentContainer` | the container it came out of, `none`, or `not_determinable` |
+| `unboxr:anomalyCode` | the anomaly code or codes, comma-separated |
+| `unboxr:anomalyText` | their English texts, in the same order |
+| `unboxr:parentContainer` | `not_determinable`, and no other value -- see below |
 
 Translate the **code**, never the text: the text comes from one table and is
 allowed to be reworded.
 
-**Adding a property to the document is an addition to the contract**, and
-raises the minor version. Every property is emitted systematically, so every
-consumer sees a new one on the first document produced after the change.
+**One invariant holds the place of a property that used to state it.** Every
+component carries either a digest, or an anomaly saying why it has none, or the
+type `data` for a path that is not file content. A digest-state property said
+this on every component until 3.0, including the ones whose digest was taken;
+what had to survive is that a component can never go silent about a missing
+digest.
+
+**`unboxr:parentContainer` is written in one case only.** A nested archive is
+flattened into a directory carrying its own name, so `outer.zip/inner.zip/a.c`
+states its own ancestry and each container it names is itself a component: a
+consumer reads the ancestry off the paths. Three cases defeat that reading --
+a bare name, an unknown frame, and a path through a provisional extraction
+directory, whose name is a digest. There a consumer walking prefixes would find
+no parent and conclude there is **none**, turning *unknown* into a favourable
+answer. The property says `not_determinable` exactly there, and nowhere else.
+
+**Adding a property to the document is an addition to the contract** and raises
+the minor version. **Removing one raises the major**, which is what 3.0 did to
+fourteen of them.
 
 ### Which BOM this document belongs to
 
@@ -327,7 +365,7 @@ choice of readability and not a point of conformance; what it does guarantee
 is that the bytes do not depend on the order the code happens to build its
 dictionaries in. A `property` and a `hash` are each folded onto **one line**,
 which is what keeps a document of a few thousand files readable:
-`{ "name": "unboxr:digestState", "value": "computed" }`.
+`{ "name": "unboxr:extractionOutcome", "value": "complete" }`.
 
 `serialise()` is public and will take a document it did not build. A key no
 table declares is never dropped and never refused -- it comes out **after**
@@ -543,7 +581,10 @@ happened. Compare two documents on one machine, under one version of `unboxr`.
   what became of them, and the SHA-256 digest of each one that could still be
   read when it was filed. It opens nothing to look inside, it says nothing
   about what any of it *means*, and *an absent entry establishes nothing* --
-  the oracle is positive only, here as everywhere else.
+  the oracle is positive only **on the corpus**: an absent entry establishes
+  nothing about what was inside a container nobody opened. It is NOT positive
+  only on the anomalies, where guarantee 4 above promises the reverse, within
+  the bound named under "The extraction document".
 - **No guarantee that the provisional extraction name stays provisional.** It is
   normally transitory -- the directory is renamed as soon as the archive is gone
   -- but it becomes the *definitive* name of that directory whenever the rename

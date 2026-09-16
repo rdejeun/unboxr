@@ -7,10 +7,17 @@ projects that report -- and the tree it goes with -- onto a CycloneDX 1.7
 document, so the corpus stops being an assertion and becomes a record.
 
 WHAT IT ATTESTS, AND WHAT IT DOES NOT. It attests that the files it lists were
-there when the run finished, and it attests their SHA-256 digests. It says
-NOTHING about anything absent from it: the oracle is positive only, here as
-everywhere else in this package. It renders no verdict of any kind, and none
+there when the run finished, and it attests their SHA-256 digests. On the
+CORPUS the oracle is positive only: the document says NOTHING about what was
+inside a container nobody opened. It renders no verdict of any kind, and none
 may be read into it.
+
+ON THE ANOMALIES IT PROMISES THE OPPOSITE, and that is what 3.0 changed. Every
+abnormal event this package can observe is written here, so a component with no
+properties is not a silence -- it says nothing abnormal happened to that path.
+The promise is bounded by what is observable at a boundary this package
+crosses, and the README names that bound rather than letting a reader assume it
+away.
 
 WHY A MODULE OF ITS OWN, AND NOT MORE OF `unboxr.report`. That module is the
 DATA -- the vocabulary of causes, the filing rules, the capability profile. A
@@ -38,8 +45,10 @@ construction rather than by discipline.
 NO EXCLUSION POLICY. `unboxr` has none -- not `__pycache__`, not `.git`, not
 `node_modules`. Whether those belong in an analysed corpus is the consumer's
 policy, applied after extraction, and introducing it here would make this
-document depend on a decision that is not this package's to take. The document
-says so out loud rather than leaving it to be discovered.
+document depend on a decision that is not this package's to take. Until 3.0 the
+document repeated that in a property of its own, on every document, always with
+the same value: a constant says nothing per document, and it belongs in the
+README, where it now lives alone.
 """
 
 from __future__ import annotations
@@ -57,11 +66,16 @@ from .extraction import (
     PROVISIONAL_DIGEST_LENGTH,
     _digest_of_existing_file,
     is_url,
+    seven_zip_version,
 )
 from .report import (
+    CAUSE_KINDS,
     CAUSE_TEXTS,
     DESTINATION_ALREADY_OCCUPIED,
-    ORACLE_REMINDER_SENTENCE,
+    NOT_REGULAR_FILE,
+    OPENED,
+    READ_FAILED,
+    SYMLINK_NOT_FOLLOWED,
     text_for,
 )
 
@@ -86,110 +100,79 @@ _CAUSE_RANK = {code: rank for rank, code in enumerate(CAUSE_TEXTS)}
 #
 # A NAME THAT THE SCHEMA ALREADY PROVIDES DOES NOT EXIST HERE. `hashes`, `type`,
 # `name` and `metadata.tools` are native CycloneDX fields; wrapping any of them
-# in a property would be a second way of saying the same thing. The rule reads
-# in both directions -- a property that merely repeats a cause code already
-# carried by `unboxr:causeCode` does not exist either, which is why there is no
-# "recognised by content" property: that IS a cause code.
+# in a property would be a second way of saying the same thing.
 #
 # NO VALUE EVER MIXES A MACHINE VALUE WITH EXPLANATORY PROSE. A code and its
 # text are two properties, so that a consumer reads one and displays the other
 # instead of splitting a string on punctuation.
 #
-# EVERY ONE OF THEM IS EMITTED ON EVERY DOCUMENT, including when the value is
-# not computable, in which case the non-computable state is WRITTEN. A property
-# that appeared only in the favourable case would read, by its absence, as "not
-# applicable" rather than "not determined". AN OMISSION ASSERTS.
+# A PROPERTY IS WRITTEN ONLY WHEN SOMETHING ABNORMAL HAPPENED, and this is the
+# rule that reversed in 3.0. Until then every property was emitted on every
+# component, `unboxr:causeCode = no_entry` included, because an omission would
+# have read as "not applicable" rather than "not determined" -- true under a
+# positive-only oracle, where a silence cannot be told apart from an unasked
+# question.
+#
+# The document now promises the opposite on anomalies: every abnormal event
+# this package can observe is written. An omission therefore ASSERTS something
+# precise -- "nothing abnormal happened to this path" -- and repeating that
+# seven hundred times over an ordinary archive adds nothing. The two halves are
+# one decision: the promise is what makes the silence readable, and without it
+# the omissions would be uninterpretable.
 #
 # The table is published in README.md and a test compares the two IN BOTH
 # DIRECTIONS. Adding a name here is an addition to the published contract and
-# raises the minor version.
+# raises the minor version; REMOVING one, as 3.0 did to fourteen of them,
+# raises the major.
 PROPERTY_PREFIX = "unboxr:"
 
-# On `metadata.properties`: what is true of the RUN.
-DOCUMENT_SCOPE = "unboxr:documentScope"
-ORACLE_REMINDER = "unboxr:oracleReminder"
-VOLATILE_FIELDS = "unboxr:volatileFields"
-EXCLUSION_POLICY = "unboxr:exclusionPolicy"
-SOURCE_KIND = "unboxr:sourceKind"
+# On `metadata.properties`: the one thing true of the RUN that nothing else
+# says. It survived the cull of 3.0 alone, and not for convenience -- it is the
+# flag that says the exhaustivity promise DOES NOT HOLD for this document. A
+# run that died partway could not observe the anomalies it never reached, and
+# without this a truncated document would be indistinguishable from a clean
+# one, its silence reading as "nothing abnormal".
 EXTRACTION_OUTCOME = "unboxr:extractionOutcome"
-SEVEN_ZIP_AVAILABLE = "unboxr:sevenZipAvailable"
-RECOGNISED_EXTENSIONS = "unboxr:recognisedExtensions"
-EXTENSIONS_NEEDING_SEVEN_ZIP = "unboxr:extensionsNeedingSevenZip"
-DEPTH_REACHED = "unboxr:depthReached"
-DEPTH_LIMIT = "unboxr:depthLimit"
-CONTAINERS_NOT_OPENED = "unboxr:containersNotOpened"
-FILES_WITHOUT_DIGEST = "unboxr:filesWithoutDigest"
 
-# On each `component`: what is true of ONE path.
-CAUSE_CODE = "unboxr:causeCode"
-CAUSE_TEXT = "unboxr:causeText"
-DIGEST_STATE = "unboxr:digestState"
-NESTING_LEVEL = "unboxr:nestingLevel"
+# On a component: what is true of ONE path, when something abnormal is true of
+# it at all.
+ANOMALY_CODE = "unboxr:anomalyCode"
+ANOMALY_TEXT = "unboxr:anomalyText"
+
+# The one survivor of the four per-component properties 3.0 removed, and it
+# survives in a single case. The other three -- `digestState`, `nestingLevel`,
+# `parentContainer` when it names a real parent -- are all derivable from the
+# path and the anomalies, because a nested archive is flattened into a
+# directory carrying its own name: `outer.zip/inner.zip/code/aes.c` states its
+# own ancestry, and the containers it names are themselves components.
+#
+# THAT READING FAILS IN THREE CASES (see `_parent_container`), and one of them
+# is ordinary: a path that passes through a provisional extraction directory,
+# whose name is a digest. There, a consumer walking prefixes finds no parent
+# and would conclude there is NONE -- turning "unknown" into a favourable
+# answer. So the property is written exactly when it would say
+# `not_determinable`, and `not_determinable` is the only value it ever takes.
 PARENT_CONTAINER = "unboxr:parentContainer"
 
-METADATA_PROPERTY_NAMES = (
-    DOCUMENT_SCOPE, ORACLE_REMINDER, VOLATILE_FIELDS, EXCLUSION_POLICY,
-    SOURCE_KIND, EXTRACTION_OUTCOME, SEVEN_ZIP_AVAILABLE,
-    RECOGNISED_EXTENSIONS, EXTENSIONS_NEEDING_SEVEN_ZIP, DEPTH_REACHED,
-    DEPTH_LIMIT, CONTAINERS_NOT_OPENED, FILES_WITHOUT_DIGEST,
-)
-COMPONENT_PROPERTY_NAMES = (
-    CAUSE_CODE, CAUSE_TEXT, DIGEST_STATE, NESTING_LEVEL, PARENT_CONTAINER,
-)
+METADATA_PROPERTY_NAMES = (EXTRACTION_OUTCOME,)
+COMPONENT_PROPERTY_NAMES = (ANOMALY_CODE, ANOMALY_TEXT, PARENT_CONTAINER)
 PROPERTY_NAMES = METADATA_PROPERTY_NAMES + COMPONENT_PROPERTY_NAMES
 
 
 # --- Closed vocabularies ------------------------------------------------------
 #
-# A digest that is absent is never a PROPERTY that is absent. Four states, and
-# they are not degrees of the same thing: one says the digest is there, and the
-# three others say why it is not -- which a reader needs in order to tell an
-# amputation from a directory.
-DIGEST_COMPUTED = "computed"
-DIGEST_READ_FAILED = "read_failed"
-DIGEST_NOT_A_FILE = "not_a_file"
-DIGEST_SYMLINK_NOT_FOLLOWED = "symlink_not_followed"
-DIGEST_STATES = (DIGEST_COMPUTED, DIGEST_READ_FAILED, DIGEST_NOT_A_FILE,
-                 DIGEST_SYMLINK_NOT_FOLLOWED)
-
-SOURCE_IS_ARCHIVE = "archive"
-SOURCE_IS_DIRECTORY = "directory"
-SOURCE_UNDETERMINED = "undetermined"
-SOURCE_KINDS = (SOURCE_IS_ARCHIVE, SOURCE_IS_DIRECTORY, SOURCE_UNDETERMINED)
-
+# The extraction either finished or it did not. Two values, and the second is
+# written on the failure path rather than left to an absent document.
 OUTCOME_COMPLETE = "complete"
 OUTCOME_FAILED = "failed"
 
-# Values a property falls back on rather than being left out.
-NO_ENTRY = "no_entry"
-NOT_APPLICABLE = "not_applicable"
+# The only value `PARENT_CONTAINER` ever carries. Its PRESENCE is the message;
+# the value spells it out for a reader who has the document and not the README.
 NOT_DETERMINABLE = "not_determinable"
+
+# Values used inside this module, never written as a property value.
 UNKNOWN = "unknown"
 NONE_VALUE = "none"
-
-# The technical caveat this document carries about ITSELF. It is not one of the
-# two scope warnings a verdict-bearing document owes -- this one bears no
-# verdict, and says so. What survives, entire, is the positive-only oracle.
-# THE LAST CLAUSE STATES A RULE OF READING, never the state of this particular
-# document: the warning is emitted on every document, linked or not, so a
-# sentence written as though the reference were always absent would be false
-# half the time. Without it, a reader holding the other document would take
-# the silence to mean the two do not go together.
-DOCUMENT_SCOPE_WARNING = (
-    "This document attests the presence and the SHA-256 digest of what it "
-    "lists, at the moment the extraction finished. It attests NOTHING about "
-    "anything absent from it, and it carries no verdict of any kind -- no "
-    "classification, no score, no conclusion about the content it names. "
-    "The absence of an external reference to another BOM means none was "
-    "supplied, not that this extraction belongs to none."
-)
-
-# The two fields this document does NOT promise from one run to the next. Named
-# rather than left to be discovered: an omission would read as a promise.
-VOLATILE_FIELD_NAMES = ("serialNumber", "metadata.timestamp")
-
-# `unboxr` applies no exclusion policy at all, and the document says so.
-NO_EXCLUSION = "none"
 
 # The shape of the one name this package fabricates for a provisional
 # extraction directory. Built from the exported length, never retyped as a
@@ -201,8 +184,15 @@ _PROVISIONAL_NAME = re.compile(r"^archive_[0-9a-f]{%d}$" % PROVISIONAL_DIGEST_LE
 # directory is therefore NOT typed `file`, which would be a false statement in a
 # document meant as evidence; it is typed `data`, the one value in that
 # enumeration that asserts a collection of values rather than a single file or a
-# piece of software. What actually tells it apart from a file with no digest is
-# `unboxr:digestState`, which says `not_a_file` and is always emitted.
+# piece of software.
+#
+# WHAT TELLS THEM APART IS NOW THE ANOMALY, not a property of this module's own:
+# a component carrying `not_regular_file` is typed `data`, everything else
+# `file`. That reproduces the previous behaviour exactly, symbolic links
+# included -- they were typed `file` before, their digest state not being
+# `not_a_file`, and they still are. Reading "not file content" as "type data"
+# and quietly retyping them would be a behaviour change wearing the clothes of
+# a cleanup.
 TYPE_FILE = "file"
 TYPE_NOT_A_FILE = "data"
 TYPE_TOOL = "application"
@@ -391,6 +381,10 @@ def _walk_the_tree(tree: Path, skip: set):
     DIRECTORIES ARE NOT INSCRIBED: this walk inventories files.
     """
     found = []
+    # THE THIRD ELEMENT IS AN ANOMALY CODE OR `None`, where it used to be one of
+    # four digest states. The fourth state said "the digest was computed", which
+    # 3.0 has nothing to write about: it is the ordinary case.
+    #
     # CHECKED, NOT LEFT TO `rglob` TO RAISE. A missing root used to be caught
     # by an `OSError` from `rglob` itself on older Python -- current pathlib
     # instead treats a non-existent root as "no matches", returning an EMPTY
@@ -416,7 +410,7 @@ def _walk_the_tree(tree: Path, skip: set):
             continue
         try:
             if path.is_symlink():
-                found.append((relative, None, DIGEST_SYMLINK_NOT_FOLLOWED))
+                found.append((relative, None, SYMLINK_NOT_FOLLOWED))
                 continue
             if path.is_dir():
                 continue      # directories are not inscribed: see above
@@ -428,14 +422,13 @@ def _walk_the_tree(tree: Path, skip: set):
                 # drop them with no trace at all. `not_a_file` is the state
                 # already used for "this path exists but is not file content
                 # to hash". Reviewed in story 14.4.
-                found.append((relative, None, DIGEST_NOT_A_FILE))
+                found.append((relative, None, NOT_REGULAR_FILE))
                 continue
         except OSError:
-            found.append((relative, None, DIGEST_READ_FAILED))
+            found.append((relative, None, READ_FAILED))
             continue
         digest = _digest_of_existing_file(path)
-        found.append((relative, digest,
-                      DIGEST_COMPUTED if digest else DIGEST_READ_FAILED))
+        found.append((relative, digest, None if digest else READ_FAILED))
     return found
 
 
@@ -466,34 +459,54 @@ def _parent_container(relative: str, frame: str, opened_paths: set) -> str:
     return NONE_VALUE
 
 
-def _depth_values(report, source_kind: str):
-    """The bound that applied and the level reached -- two numbers, or neither.
+def _anomaly_pairs(codes):
+    """The code/text pair for a path, or nothing at all when nothing happened.
 
-    On a source that is already a directory there is no flattening at all:
-    both read `not_applicable`. Writing `0` there would assert a measurement
-    that was never taken.
+    TWO PROPERTIES, NEVER ONE. A consumer on the other side of a language
+    boundary translates the CODE and ignores the text, so mixing a machine
+    value and prose into one string would force it to split on punctuation.
 
-    THE SAME IS TRUE ON THE FAILURE PATH, for a source that WAS meant to be an
-    archive: `prepare_source` can raise before `flatten_nested_archives` is
-    ever called (`cli.py`'s failure branch, AC-8.5), in which case
-    `report.depth_reached` sits at its dataclass DEFAULT of `0` -- not `None`
-    -- and would read as a genuine "flattening stopped at level 0" rather than
-    "flattening never started". `depth_limit` is the reliable signal: it is
-    set, together with `depth_reached`, at the very first line of
-    `flatten_nested_archives` (`extraction.py:1191`), so `depth_limit is None`
-    can only mean flattening never ran at all. Reviewed in story 14.4.
+    AN EMPTY LIST IS THE ORDINARY CASE since 3.0, and it is what makes the
+    caller leave `properties` out. There is no `no_entry` any more: the absence
+    of the key is the statement.
     """
-    if source_kind == SOURCE_IS_DIRECTORY:
-        return NOT_APPLICABLE, NOT_APPLICABLE
-    if report.depth_limit is None:
-        return UNKNOWN, UNKNOWN
-    reached = UNKNOWN if report.depth_reached is None else report.depth_reached
-    return reached, report.depth_limit
+    if not codes:
+        return []
+    return [(ANOMALY_CODE, ", ".join(codes)),
+            (ANOMALY_TEXT, " | ".join(text_for(code) for code in codes))]
+
+
+def _seven_zip_tool(report):
+    """The 7-Zip entry of `metadata.tools`, or nothing.
+
+    WRITTEN ONLY WHEN THE BINARY ACTUALLY RAN. `capability.seven_zip_binary`
+    says what the machine HAS; naming that here would describe the environment
+    the document was made in rather than what made it.
+
+    THE STEM, NEVER THE PATH. `find_7zip_binary()` returns an absolute path,
+    which on Windows sits under Program Files or WindowsApps -- and no absolute
+    path belongs in a document meant to be compared between machines, which is
+    the whole reason `_bare_name` exists above. The stem also happens to be the
+    identity that matters: `7z`, `7za`, `7zr` and `7zz` are different products
+    with different coverage.
+
+    THE VERSION IS OPTIONAL AND MAY BE MISSING. A fork whose banner this
+    package cannot parse still gets its entry: dropping the tool over an
+    unreadable banner would hide that 7-Zip ran at all, which is the part a
+    reader needs.
+    """
+    binary = getattr(report, "seven_zip_used", None)
+    if not binary:
+        return None
+    entry = {"type": TYPE_TOOL, "name": Path(binary).stem}
+    version = seven_zip_version(binary)
+    if version:
+        entry["version"] = version
+    return entry
 
 
 def build_document(report, tree=None, *, source=None, source_digest=None,
-                   source_kind=SOURCE_UNDETERMINED, serial_number=None,
-                   timestamp=None, linked_bom=None):
+                   serial_number=None, timestamp=None, linked_bom=None):
     """The CycloneDX 1.7 document, as a structure. Nothing is written here.
 
     `tree` is the directory the extraction produced, or `None` when the run
@@ -511,9 +524,14 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
 
     ONE COMPONENT PER PATH, never one per report entry. The identity of a
     report entry is the pair (cause, path) and one path can carry several
-    causes -- a container opened and then kept is the ordinary case. Every code
-    is present, in a deterministic order, and the texts follow the same order:
-    none is chosen at the expense of another.
+    causes -- a container opened and then kept is the ordinary case. Every
+    anomaly is present, in a deterministic order, and the texts follow the same
+    order: none is chosen at the expense of another.
+
+    `source_kind` WAS REMOVED IN 3.0 and is no longer accepted. It fed two
+    things that no longer exist: the `sourceKind` property, which said what
+    `metadata.component.type` already says, and the two depth properties. A
+    parameter that no longer changes anything is worse than an absent one.
     """
     # BEFORE ANYTHING IS BUILT. A document half-assembled and then thrown away
     # costs a full walk of the tree for nothing, and the fault is decidable
@@ -526,27 +544,29 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
 
     def _entry(path: str):
         if path not in entries:
-            entries[path] = {"codes": [], "digest": None, "state": None,
-                             "level": None, "frame": None}
+            entries[path] = {"codes": [], "digest": None, "frame": None,
+                             "names_a_directory": False}
             order.append(path)
         return entries[path]
 
-    # GENRE FIRST, THEN CAUSE RANK -- NEVER THE REPORT'S OWN FILL ORDER
-    # (AC-7.3). The genre a list belongs to (opened, not_opened,
-    # still_in_tree, widened) is a structural property of the report, fixed
-    # here in source, not something the report promises to preserve; within
-    # one genre, `_CAUSE_RANK` breaks ties on the code's OWN canonical
-    # position, and `path` last for full stability. Two runs that file the
-    # same causes in a different internal order produce the identical
-    # `codes`/`causeText` join and the identical `level`/`frame` choice below.
+    # GENRE FIRST, THEN CAUSE RANK -- NEVER THE REPORT'S OWN FILL ORDER. The
+    # genre a list belongs to is a structural property of the report, fixed
+    # here in source, not something the report promises to preserve; within one
+    # genre, `_CAUSE_RANK` breaks ties on the code's OWN canonical position,
+    # and `path` last for full stability.
     def _canonically_ordered(genre):
         return sorted(genre, key=lambda r: (
             _CAUSE_RANK.get(r.code, len(_CAUSE_RANK)), r.path))
 
+    # `not_attested` IS IN THE CHAIN even though today's walk attaches its
+    # codes directly below rather than filing them. A caller that files one --
+    # `record()` accepts them, they have a kind -- would otherwise have it
+    # silently dropped, which is the one thing this document must never do.
     records = (_canonically_ordered(report.opened)
                + _canonically_ordered(report.not_opened)
                + _canonically_ordered(report.still_in_tree)
-               + _canonically_ordered(report.widened))
+               + _canonically_ordered(report.widened)
+               + _canonically_ordered(getattr(report, "not_attested", [])))
     opened_paths = {r.path for r in report.opened
                     if r.path_frame == PATH_IS_TREE_RELATIVE}
 
@@ -558,11 +578,12 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
     skip = {r.path for r in records if r.path_frame == PATH_IS_TREE_RELATIVE}
 
     if tree is not None:
-        for relative, digest, state in _walk_the_tree(Path(tree), skip):
+        for relative, digest, anomaly in _walk_the_tree(Path(tree), skip):
             item = _entry(relative)
             item["digest"] = digest
-            item["state"] = state
             item["frame"] = PATH_IS_TREE_RELATIVE
+            if anomaly is not None:
+                item["codes"].append(anomaly)
 
     for record in records:
         item = _entry(record.path)
@@ -573,84 +594,134 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
         # path could not be confronted -- the collision case above.
         if item["digest"] is None and record.digest:
             item["digest"] = record.digest
-            item["state"] = DIGEST_COMPUTED
-        if item["state"] is None:
-            # Only DESTINATION_ALREADY_OCCUPIED is measurably a directory: it
-            # is the one report code no call site ever passes a digest for,
-            # BY DESIGN, because its recorded path names the destination
-            # directory itself (`extraction.py:1744`, "NO DIGEST: destination
-            # is a DIRECTORY"). Every other digest-less record names
-            # something that WAS a file -- a container hashed during the run
-            # whose read then failed, or one already gone (unlinked) by the
-            # time this ran (`EXTRACTION_KEPT_UNDER_PROVISIONAL_NAME`) -- so
-            # it is a read failure, never `not_a_file`: typing it `data`
-            # would be exactly the false statement AC-1.9 forbids. Reviewed
-            # in story 14.4.
-            item["state"] = (DIGEST_NOT_A_FILE
-                             if record.code == DESTINATION_ALREADY_OCCUPIED
-                             else DIGEST_READ_FAILED)
-        if item["level"] is None:
-            item["level"] = record.level
         if item["frame"] is None:
             item["frame"] = record.path_frame
+        # Only DESTINATION_ALREADY_OCCUPIED is measurably a directory: it is
+        # the one report code no call site ever passes a digest for, BY
+        # DESIGN, because its recorded path names the destination directory
+        # itself (`extraction.py`, "NO DIGEST: destination is a DIRECTORY").
+        if record.code == DESTINATION_ALREADY_OCCUPIED:
+            item["names_a_directory"] = True
+
+    # THE INVARIANT, APPLIED ONCE AND FOR ALL: a component carries either a
+    # digest or an anomaly saying why it has none. `hashes` has no way to say
+    # "not computed", and a component silent on both would be the one thing a
+    # document of evidence cannot be. It replaces the `digestState` property,
+    # which said this on every component including the ones it was true of.
+    #
+    # ANY ANOMALY SATISFIES IT, NOT A DEDICATED ONE, and that is the whole
+    # difference with the property it replaces. A container refused by the tar
+    # filter has no digest BECAUSE it was refused: the refusal is already on
+    # the component and already explains the absence. Appending `read_failed`
+    # beside it -- which is what `digestState` used to say for exactly these
+    # components, invisibly, in a field of its own -- would now show up in the
+    # anomaly list and assert a read that failed, an event that never
+    # happened. Measured against the suite in implementation: three tests
+    # caught it.
+    #
+    # So the fallback fires only for a path with NO anomaly at all and no
+    # digest. AND `OPENED` DOES NOT COUNT AS ONE, which is the case that makes
+    # this guard necessary rather than decorative: a nested container whose
+    # digest could not be taken carries `nested_container_opened` and nothing
+    # else, that code writes no property, and the component would come out
+    # with neither a digest nor a word about why -- silent on the one thing
+    # this document exists to attest. Caught by the suite in implementation.
+    for item in entries.values():
+        if item["digest"] is not None:
+            continue
+        if any(CAUSE_KINDS.get(code) != OPENED for code in item["codes"]):
+            continue
+        item["codes"].append(READ_FAILED)
+
+    # THE INPUT CONTAINER IS NOT LISTED TWICE. `metadata.component` already
+    # names it, with its digest; a second entry saying the same thing under a
+    # `bom-ref` was pure duplication once its `input_container_opened` property
+    # stopped being written.
+    #
+    # BY IDENTITY OF THE PATH, NEVER BY RANK. The components are sorted, and
+    # the input container lands first only when its name happens to sort first
+    # -- `paquet.zip` before `paquet/...` because `.` precedes `/` in ASCII,
+    # which is a coincidence of that pair and not a rule. A collision is
+    # excluded by the naming rule itself: an archive is flattened into a
+    # directory carrying its own name, so nothing INSIDE the tree can have a
+    # relative path equal to the archive's own bare name.
+    subject_name = _bare_name(source)
+    subject_codes = []
+    if source is not None and subject_name in entries:
+        subject_codes = [code for code in entries[subject_name]["codes"]
+                         if CAUSE_KINDS.get(code) != OPENED]
 
     components = []
-    for rank, path in enumerate(sorted(order), start=1):
+    listed = [path for path in sorted(order)
+              if not (source is not None and path == subject_name)]
+    for rank, path in enumerate(listed, start=1):
         item = entries[path]
-        codes = item["codes"]
-        state = item["state"] or DIGEST_READ_FAILED
+        # OPENING A CONTAINER IS NOT AN ANOMALY, so its codes produce no
+        # property -- but the COMPONENT stays, and with it the digest. A nested
+        # archive is destroyed by the flattening: the instant it was recorded
+        # is the only one it could ever be hashed at, and dropping the
+        # component here would erase that digest from the only document that
+        # will ever hold it.
+        codes = [code for code in item["codes"]
+                 if CAUSE_KINDS.get(code) != OPENED]
         component = {
             # DERIVED FROM THE SORTED RANK, NEVER FROM THE PATH -- a path
             # would need escaping wherever a `bom-ref` is placed after a `#`
-            # in a BOM-Link URN. THE CONSEQUENCE, AND WHAT WAS DECIDED ON IT:
-            # a rank RENUMBERS every time a file enters or leaves the corpus,
-            # so a link built against one document's `bom-ref` is valid
-            # against THAT document only, never against "the extraction
-            # document of this package" in general -- and a regeneration would
-            # break it without saying so, no validator seeing anything. That
-            # is why `is_bom_link_to_a_document` refuses the element shape
-            # outright: the only link this package writes points at a
-            # DOCUMENT. See also `README.md`, "The extraction document".
+            # in a BOM-Link URN. A rank RENUMBERS every time a file enters or
+            # leaves the corpus, which is why `is_bom_link_to_a_document`
+            # refuses the element shape outright.
             "bom-ref": "unboxr-component-%d" % rank,
-            "type": TYPE_FILE if state != DIGEST_NOT_A_FILE else TYPE_NOT_A_FILE,
+            # TWO WAYS TO BE A NON-FILE, and they come from different places:
+            # the walk says so with `not_regular_file`, and a record says so by
+            # being a destination directory -- the one code no call site ever
+            # passes a digest for, by design. Both must type the component
+            # `data`: calling a directory a `file` would be a false statement
+            # in a document meant as evidence.
+            "type": (TYPE_NOT_A_FILE
+                     if NOT_REGULAR_FILE in codes or item["names_a_directory"]
+                     else TYPE_FILE),
             # THE FULL RELATIVE PATH, not the base name: `name` is one of the
             # two required fields, and two files of the same name in two
             # directories would otherwise be indistinguishable to a reader.
             "name": path,
-            "properties": _properties((
-                (CAUSE_CODE, ", ".join(codes) if codes else NO_ENTRY),
-                (CAUSE_TEXT, " | ".join(text_for(c) for c in codes)
-                 if codes else NO_ENTRY),
-                (DIGEST_STATE, state),
-                (NESTING_LEVEL, UNKNOWN if item["level"] is None
-                 else item["level"]),
-                (PARENT_CONTAINER, _parent_container(
-                    path, item["frame"], opened_paths)),
-            )),
         }
+        pairs = _anomaly_pairs(codes)
+        # WRITTEN ONLY WHEN THE PREFIXES CANNOT BE READ. Everywhere else the
+        # path states its own ancestry and this property would repeat it; here
+        # a consumer walking prefixes would find no parent and conclude there
+        # is none, turning "unknown" into a favourable answer.
+        if _parent_container(path, item["frame"],
+                             opened_paths) == NOT_DETERMINABLE:
+            pairs.append((PARENT_CONTAINER, NOT_DETERMINABLE))
+        if pairs:
+            component["properties"] = _properties(pairs)
         hashes = _hashes(item["digest"])
         if hashes is not None:
             component["hashes"] = hashes
         components.append(component)
 
-    without_digest = sum(1 for c in components
-                         if not any(p["name"] == DIGEST_STATE
-                                    and p["value"] == DIGEST_COMPUTED
-                                    for p in c["properties"]))
-    reached, limit = _depth_values(report, source_kind)
-    profile = report.capability
-
     subject = {
         "type": TYPE_FILE if source_digest else TYPE_NOT_A_FILE,
-        "name": _bare_name(source),
-        "properties": _properties((
-            (DIGEST_STATE,
-             DIGEST_COMPUTED if source_digest else DIGEST_NOT_A_FILE),
-        )),
+        "name": subject_name,
     }
+    # THE SUBJECT CARRIES ITS OWN ANOMALIES, since it no longer appears among
+    # the components. An input container that failed to open is the case this
+    # exists for, and it is the one where the document matters most.
+    subject_pairs = _anomaly_pairs(subject_codes)
+    if subject_pairs:
+        subject["properties"] = _properties(subject_pairs)
     subject_hashes = _hashes(source_digest)
     if subject_hashes is not None:
         subject["hashes"] = subject_hashes
+
+    # WHICH TOOLS, AND WHICH VERSIONS. What the document holds depends on them:
+    # which formats this version of `unboxr` can open, and -- when an external
+    # 7-Zip was actually run -- which fork did the opening. A document silent
+    # on its producers cannot be diagnosed when two corpora diverge.
+    tools = [{"type": TYPE_TOOL, "name": "unboxr", "version": _tool_version()}]
+    seven_zip = _seven_zip_tool(report)
+    if seven_zip is not None:
+        tools.append(seven_zip)
 
     document = {
         "bomFormat": "CycloneDX",
@@ -663,43 +734,13 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
         "version": 1,
         "metadata": {
             "timestamp": timestamp or _now_to_the_second(),
-            # WHICH TOOL, AND WHICH VERSION. The set of digests depends on it:
-            # which formats this version can open, and what the presence of a
-            # 7-Zip binary changes. A document silent on its producer cannot be
-            # diagnosed when two corpora diverge.
-            "tools": {"components": [{"type": TYPE_TOOL, "name": "unboxr",
-                                      "version": _tool_version()}]},
+            "tools": {"components": tools},
             # WHAT THIS DOCUMENT IS THE DOCUMENT OF. Without it, a list of
             # thousands of files never names its own subject.
             "component": subject,
             "properties": _properties((
-                (DOCUMENT_SCOPE, DOCUMENT_SCOPE_WARNING),
-                (ORACLE_REMINDER, ORACLE_REMINDER_SENTENCE),
-                (VOLATILE_FIELDS, ", ".join(VOLATILE_FIELD_NAMES)),
-                (EXCLUSION_POLICY, NO_EXCLUSION),
-                (SOURCE_KIND, source_kind),
                 (EXTRACTION_OUTCOME,
                  OUTCOME_FAILED if tree is None else OUTCOME_COMPLETE),
-                (SEVEN_ZIP_AVAILABLE,
-                 "true" if profile.seven_zip_available else "false"),
-                (RECOGNISED_EXTENSIONS, profile.recognised_extensions),
-                (EXTENSIONS_NEEDING_SEVEN_ZIP,
-                 profile.extensions_needing_seven_zip),
-                (DEPTH_REACHED, reached),
-                (DEPTH_LIMIT, limit),
-                # NOT `report.amputation_count()`: that counts RECORDS
-                # (`len(report.not_opened)`), and AC-4.1 files a path under
-                # several codes without making it several components -- a
-                # single container refused for two reasons at once would then
-                # have this number exceed the actual not-opened components in
-                # `components`. Counting distinct PATHS matches what this
-                # document's own identity rule (one component per path) says
-                # the amplitude of the amputation is. Reviewed in story 14.4;
-                # `amputation_count()` keeps its existing meaning for the
-                # command's own log line, a lower-stakes, pre-existing use
-                # this story does not touch.
-                (CONTAINERS_NOT_OPENED, len({r.path for r in report.not_opened})),
-                (FILES_WITHOUT_DIGEST, without_digest),
             )),
         },
         "components": components,
@@ -710,10 +751,7 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
     # component, and does NOT exist on `metadata` -- writing it there, which
     # is where everything else this package adds goes, would make the document
     # invalid. THREE KEYS AND NO MORE: `externalReference` is
-    # `additionalProperties: false`, admitting `url`, `comment`, `type`,
-    # `hashes` and `properties` and nothing of anyone's own devising. `type`
-    # is `bom`, one of the 47 values of its enumeration, the one the schema
-    # describes as a bill of materials.
+    # `additionalProperties: false`.
     #
     # THE KEY IS ABSENT WHEN THERE IS NO LINK, and an empty array is not an
     # alternative: it would read as "we looked, there is none", a negative
@@ -723,10 +761,6 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
     # mistake.
     if linked_bom is not None:
         # WRITTEN IN THE SCHEMA'S ORDER, not merely serialised into it.
-        # `build_document` is public and returns a plain dictionary: a caller
-        # who runs their own `json.dumps` on it -- the only way to get the
-        # document as an object -- would otherwise get an order this package
-        # no longer uses anywhere. It costs nothing to agree with ourselves.
         document["externalReferences"] = [{
             "url": linked_bom,
             "comment": LINKED_BOM_COMMENT,

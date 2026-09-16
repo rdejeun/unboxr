@@ -957,8 +957,7 @@ def main(argv: list[str] | None = None) -> int:
         # THE LINK IS CARRIED HERE TOO, and this is the branch that most needs
         # it: a run whose corpus is amputated to nothing is precisely the one
         # that has to be tied back to the conclusion it fed.
-        _write_document(args.sbom, report, None, args.archive, None,
-                        sbom.SOURCE_UNDETERMINED, logger,
+        _write_document(args.sbom, report, None, args.archive, None, logger,
                         linked_bom=args.linked_bom)
         return 1
 
@@ -969,10 +968,8 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Distribution nature: %s", prepared.nature)
     if prepared.digest is not None:
         logger.info("Input digest: sha256:%s", prepared.digest)
-    source_kind = (sbom.SOURCE_IS_DIRECTORY if prepared.nature == "directory"
-                   else sbom.SOURCE_IS_ARCHIVE)
     written = _write_document(args.sbom, report, prepared.tree, args.archive,
-                              prepared.digest, source_kind, logger,
+                              prepared.digest, logger,
                               linked_bom=args.linked_bom)
     # `stdout` carries the tree whatever happened to the document: the
     # extraction is not lost because a write failed.
@@ -981,8 +978,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _write_document(document_path, report, tree, source, source_digest,
-                    source_kind, logger: logging.Logger,
-                    linked_bom=None) -> bool:
+                    logger: logging.Logger, linked_bom=None) -> bool:
     """Write the extraction document, or say why it could not be written.
 
     THE RESIDUE OF `check_document_path`, HANDLED RATHER THAN LEFT SILENT. That
@@ -996,7 +992,7 @@ def _write_document(document_path, report, tree, source, source_digest,
     try:
         document = sbom.build_document(
             report, tree, source=source, source_digest=source_digest,
-            source_kind=source_kind, linked_bom=linked_bom)
+            linked_bom=linked_bom)
         sbom.write_document(document, document_path)
     except Exception as exc:
         logger.error("the extraction document could not be written to %s: "

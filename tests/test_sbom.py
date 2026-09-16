@@ -76,10 +76,28 @@ class _Bench(unittest.TestCase):
 
     def _entries(self, report):
         return (list(report.opened) + list(report.not_opened)
-                + list(report.still_in_tree) + list(report.widened))
+                + list(report.still_in_tree) + list(report.widened)
+                + list(report.not_attested))
 
     def _properties_of(self, component) -> dict:
-        return {p["name"]: p["value"] for p in component["properties"]}
+        """The properties of a component, which since 3.0 may have none.
+
+        `.get`, NOT `[...]`: a component to which nothing abnormal happened
+        carries no `properties` key at all, and that is the ordinary case now
+        rather than the exception. A helper that raised there would make every
+        test of a clean extraction fail for the wrong reason.
+        """
+        return {p["name"]: p["value"]
+                for p in component.get("properties", [])}
+
+    def _anomalies_of(self, component) -> list:
+        """The anomaly codes on a component, in order, or an empty list.
+
+        EMPTY IS THE STATEMENT "nothing abnormal happened to this path", not
+        "we did not look": the document promises every anomaly it can observe.
+        """
+        code = self._properties_of(component).get(sb.ANOMALY_CODE)
+        return [] if code is None else code.split(", ")
 
     def _component(self, document, name: str):
         found = [c for c in document["components"] if c["name"] == name]
@@ -91,7 +109,7 @@ class _Bench(unittest.TestCase):
         prepared = ux.prepare_source(str(archive), workspace=workspace)
         return prepared, sb.build_document(
             prepared.report, prepared.tree, source=str(archive),
-            source_digest=prepared.digest, source_kind=sb.SOURCE_IS_ARCHIVE)
+            source_digest=prepared.digest)
 
     def _entry(self, report, code: str):
         found = [e for e in self._entries(report) if e.code == code]
@@ -300,8 +318,7 @@ class TestTheSkeletonOfTheDocument(_Bench):
         subject = document["metadata"]["component"]
         self.assertEqual("p.zip", subject["name"])
         self.assertEqual(prepared.digest, subject["hashes"][0]["content"])
-        self.assertEqual(sb.DIGEST_COMPUTED,
-                         self._properties_of(subject)[sb.DIGEST_STATE])
+        self.assertEqual([], self._anomalies_of(subject))
 
     def test_the_subject_of_a_directory_run_has_its_missing_digest_written(self):
         """A directory is not a single file and has nothing to hash. The
@@ -314,13 +331,15 @@ class TestTheSkeletonOfTheDocument(_Bench):
 
         document = sb.build_document(prepared.report, prepared.tree,
                                      source=str(source),
-                                     source_digest=prepared.digest,
-                                     source_kind=sb.SOURCE_IS_DIRECTORY)
+                                     source_digest=prepared.digest)
 
         subject = document["metadata"]["component"]
         self.assertNotIn("hashes", subject)
-        self.assertEqual(sb.DIGEST_NOT_A_FILE,
-                         self._properties_of(subject)[sb.DIGEST_STATE])
+        # SAID BY THE TYPE, and it always was: `type`, the digest state and the
+        # presence of `hashes` were three readings of one expression. 3.0 keeps
+        # the one the schema already provides.
+        self.assertEqual(sb.TYPE_NOT_A_FILE, subject["type"])
+        self.assertEqual([], self._anomalies_of(subject))
 
     def test_no_absolute_path_and_no_temporary_directory_name_gets_in(self):
         """This document is meant to be compared between machines. An absolute
@@ -389,10 +408,11 @@ class TestEveryFileCarriesItsDigest(_Bench):
         self.assertFalse((prepared.tree / "vendor" / "inner.zip").is_file())
         component = self._component(document, "vendor/inner.zip")
         self.assertEqual(self._digest_of(inner), component["hashes"][0]["content"])
-        properties = self._properties_of(component)
-        self.assertEqual(rp.NESTED_CONTAINER_OPENED, properties[sb.CAUSE_CODE])
-        self.assertEqual("1", properties[sb.NESTING_LEVEL])
-        self.assertEqual(sb.NONE_VALUE, properties[sb.PARENT_CONTAINER])
+        # OPENING IT IS NOT AN ANOMALY, so the component carries no property
+        # at all -- but it is HERE, with the digest taken during the run. That
+        # is the whole point of the division of labour: no walk of the finished
+        # tree could ever produce this component.
+        self.assertNotIn("properties", component)
 
     def test_a_container_nested_two_deep_names_the_container_it_came_out_of(self):
         """The parent is read off the path, which works because a nested
@@ -405,13 +425,20 @@ class TestEveryFileCarriesItsDigest(_Bench):
 
         _, document = self._document_of(archive)
 
+        # READ OFF THE PATH, which is why the two properties that used to
+        # say it were removed: a nested archive is flattened into a directory
+        # carrying its own name verbatim, so the path STATES its ancestry, and
+        # each container it names is itself a component of this document.
         component = self._component(document, "outer.zip/inner.zip")
-        properties = self._properties_of(component)
-        self.assertEqual("outer.zip", properties[sb.PARENT_CONTAINER])
-        self.assertEqual("2", properties[sb.NESTING_LEVEL])
-        leaf = self._component(document, "outer.zip/inner.zip/code/aes.c")
-        self.assertEqual("outer.zip/inner.zip",
-                         self._properties_of(leaf)[sb.PARENT_CONTAINER])
+        self.assertNotIn("properties", component)
+        names = {c["name"] for c in document["components"]}
+        self.assertIn("outer.zip", names)
+        self.assertIn("outer.zip/inner.zip/code/aes.c", names)
+        for container in ("outer.zip", "outer.zip/inner.zip"):
+            self.assertTrue(
+                any(n.startswith(container + "/") for n in names),
+                "the container has content under it, so it is a boundary a "
+                "consumer can find by matching prefixes")
 
     def test_an_empty_file_is_inventoried_with_the_digest_of_no_bytes(self):
         """Not a theoretical case: a plain decompression that fails leaves an
@@ -422,8 +449,7 @@ class TestEveryFileCarriesItsDigest(_Bench):
         _, document = self._document_of(archive)
         component = self._component(document, "empty.txt")
         self.assertEqual(self._digest_of(b""), component["hashes"][0]["content"])
-        self.assertEqual(sb.DIGEST_COMPUTED,
-                         self._properties_of(component)[sb.DIGEST_STATE])
+        self.assertEqual([], self._anomalies_of(component))
 
     def test_a_file_that_cannot_be_read_is_inscribed_named_and_counted(self):
         """A broken link, a refused permission, a file removed between the
@@ -442,11 +468,7 @@ class TestEveryFileCarriesItsDigest(_Bench):
 
         component = self._component(document, "a.txt")
         self.assertNotIn("hashes", component)
-        self.assertEqual(sb.DIGEST_READ_FAILED,
-                         self._properties_of(component)[sb.DIGEST_STATE])
-        metadata = {p["name"]: p["value"]
-                    for p in document["metadata"]["properties"]}
-        self.assertEqual("1", metadata[sb.FILES_WITHOUT_DIGEST])
+        self.assertIn(sb.READ_FAILED, self._anomalies_of(component))
 
     def test_a_symbolic_link_is_inscribed_and_never_followed(self):
         """`is_file()` FOLLOWS a link: hashing one would duplicate the content
@@ -485,7 +507,7 @@ class TestEveryFileCarriesItsDigest(_Bench):
         found = sb._walk_the_tree(_Tree(), set())
 
         self.assertEqual([("vendor/link-to-elsewhere", None,
-                           sb.DIGEST_SYMLINK_NOT_FOLLOWED)], found)
+                           sb.SYMLINK_NOT_FOLLOWED)], found)
 
     def test_a_special_node_is_inscribed_not_silently_skipped(self):
         """A FIFO, a socket, a device node: not a directory, not a symlink,
@@ -522,7 +544,7 @@ class TestEveryFileCarriesItsDigest(_Bench):
 
         found = sb._walk_the_tree(_Tree(), set())
 
-        self.assertEqual([("pipe", None, sb.DIGEST_NOT_A_FILE)], found)
+        self.assertEqual([("pipe", None, sb.NOT_REGULAR_FILE)], found)
 
 # ---------------------------------------------------------------------------
 # What was NOT opened, which is the half a walk of the tree can never supply
@@ -539,14 +561,13 @@ class TestWhatWasNotOpened(_Bench):
         held = ux.new_report()
         ux.flatten_nested_archives(root, report=held)
 
-        document = sb.build_document(held, root, source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, root, source="p.zip")
 
         component = self._component(document, "refused.tar.zst")
         properties = self._properties_of(component)
-        self.assertEqual(rp.ZSTD_NOT_SUPPORTED, properties[sb.CAUSE_CODE])
+        self.assertEqual(rp.ZSTD_NOT_SUPPORTED, properties[sb.ANOMALY_CODE])
         self.assertEqual(rp.text_for(rp.ZSTD_NOT_SUPPORTED),
-                         properties[sb.CAUSE_TEXT])
+                         properties[sb.ANOMALY_TEXT])
 
     def test_a_format_needing_a_binary_this_machine_lacks_is_in_the_document(self):
         """The 7-Zip binary IS present on some machines and absent on others,
@@ -562,12 +583,11 @@ class TestWhatWasNotOpened(_Bench):
         finally:
             ux.find_7zip_binary = original
 
-        document = sb.build_document(held, root, source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, root, source="p.zip")
 
         component = self._component(document, "payload.rar")
         self.assertEqual(rp.SEVEN_ZIP_BINARY_MISSING,
-                         self._properties_of(component)[sb.CAUSE_CODE])
+                         self._properties_of(component)[sb.ANOMALY_CODE])
 
     def test_a_container_still_in_the_tree_is_inventoried_exactly_once(self):
         """It was never opened, so it is still a file the walk would find --
@@ -578,8 +598,7 @@ class TestWhatWasNotOpened(_Bench):
         held = ux.new_report()
         ux.flatten_nested_archives(root, report=held)
 
-        document = sb.build_document(held, root, source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, root, source="p.zip")
 
         matching = [c for c in document["components"]
                     if c["name"] == "refused.tar.zst"]
@@ -587,21 +606,24 @@ class TestWhatWasNotOpened(_Bench):
         names = [c["name"] for c in document["components"]]
         self.assertEqual(len(names), len(set(names)))
 
-    def test_the_document_carries_the_size_of_the_amputation(self):
-        """A reader must be able to measure what is missing without counting
-        the entries by hand."""
+    def test_every_container_not_opened_is_a_component_of_its_own(self):
+        """`unboxr:containersNotOpened` was a COUNT of what the components
+        already showed one by one, and 3.0 removed it: a reader counts them in
+        one pass over a document that is now small enough to read. What must
+        stay true is the thing the count was derived from -- one component per
+        path that was not opened, each carrying its own cause."""
         root = self._tree()
         (root / "a.tar.zst").write_bytes(ZSTD_MAGIC + b"one")
         (root / "b.tar.zst").write_bytes(ZSTD_MAGIC + b"two")
         held = ux.new_report()
         ux.flatten_nested_archives(root, report=held)
 
-        document = sb.build_document(held, root, source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, root, source="p.zip")
 
-        metadata = {p["name"]: p["value"]
-                    for p in document["metadata"]["properties"]}
-        self.assertEqual("2", metadata[sb.CONTAINERS_NOT_OPENED])
+        refused = [c for c in document["components"]
+                   if rp.ZSTD_NOT_SUPPORTED in self._anomalies_of(c)]
+        self.assertEqual({"a.tar.zst", "b.tar.zst"},
+                         {c["name"] for c in refused})
 
     def test_a_cause_code_from_another_version_degrades_by_naming_itself(self):
         """A code this version does not know is not a reason to fail the
@@ -612,12 +634,11 @@ class TestWhatWasNotOpened(_Bench):
             code="a_code_from_the_future", path="a.zip",
             path_frame=rp.PATH_IS_TREE_RELATIVE)
 
-        document = sb.build_document(held, None, source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, None, source="p.zip")
 
         properties = self._properties_of(self._component(document, "a.zip"))
-        self.assertEqual("a_code_from_the_future", properties[sb.CAUSE_CODE])
-        self.assertIn("unknown cause code", properties[sb.CAUSE_TEXT])
+        self.assertEqual("a_code_from_the_future", properties[sb.ANOMALY_CODE])
+        self.assertIn("unknown cause code", properties[sb.ANOMALY_TEXT])
 
 
 # ---------------------------------------------------------------------------
@@ -625,25 +646,45 @@ class TestWhatWasNotOpened(_Bench):
 # ---------------------------------------------------------------------------
 class TestOneComponentPerPath(_Bench):
 
-    def test_a_path_carrying_several_causes_keeps_all_of_them_in_order(self):
-        """A container opened and then kept is the ordinary case of one path
-        with two causes. None is chosen at the expense of another, and the
-        texts follow the same order as the codes."""
+    def test_a_path_carrying_several_anomalies_keeps_all_of_them_in_order(self):
+        """None is chosen at the expense of another, and the texts follow the
+        same order as the codes."""
         held = ux.new_report()
-        held.record(rp.NESTED_CONTAINER_OPENED, "a.zip",
+        held.record(rp.DESTINATION_ALREADY_OCCUPIED, "a.zip",
                     path_frame=rp.PATH_IS_TREE_RELATIVE)
         held.record(rp.ARCHIVE_KEPT_AFTER_SUCCESSFUL_EXTRACTION, "a.zip",
                     path_frame=rp.PATH_IS_TREE_RELATIVE)
 
-        document = sb.build_document(held, None, source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, None, source="p.zip")
 
         properties = self._properties_of(self._component(document, "a.zip"))
-        codes = properties[sb.CAUSE_CODE].split(", ")
-        self.assertEqual([rp.NESTED_CONTAINER_OPENED,
+        codes = properties[sb.ANOMALY_CODE].split(", ")
+        self.assertEqual([rp.DESTINATION_ALREADY_OCCUPIED,
                           rp.ARCHIVE_KEPT_AFTER_SUCCESSFUL_EXTRACTION], codes)
         self.assertEqual([rp.text_for(code) for code in codes],
-                         properties[sb.CAUSE_TEXT].split(" | "))
+                         properties[sb.ANOMALY_TEXT].split(" | "))
+
+    def test_opening_a_container_is_not_an_anomaly_but_keeps_its_component(self):
+        """THE TRAP OF 3.0, AND THE ONE THING THAT MUST NOT BE LOST WITH THE
+        `opened` CODES. Opening a container is the nominal case, so it writes
+        no property any more. But a nested container is DESTROYED by the
+        flattening: the instant it was recorded is the only one it could ever
+        be hashed at, and no walk of the finished tree can find it again.
+
+        Dropping the COMPONENT along with the property would therefore erase
+        that digest from the only document that will ever hold it -- silently,
+        and with nothing to notice it. The component stays; it simply carries
+        nothing but its name and its digest, like any ordinary file."""
+        held = ux.new_report()
+        held.record(rp.NESTED_CONTAINER_OPENED, "vendor/inner.zip",
+                    digest="a" * 64, path_frame=rp.PATH_IS_TREE_RELATIVE)
+
+        document = sb.build_document(held, None, source="p.zip")
+
+        component = self._component(document, "vendor/inner.zip")
+        self.assertEqual([], self._anomalies_of(component))
+        self.assertNotIn("properties", component)
+        self.assertEqual("a" * 64, component["hashes"][0]["content"])
 
     def test_a_bare_name_never_removes_a_real_file_of_the_same_name(self):
         """THE COLLISION, AND WHICH WAY THE DOUBT LEANS. A record whose path is
@@ -658,8 +699,7 @@ class TestOneComponentPerPath(_Bench):
                     digest=self._digest_of(b"a completely different archive"),
                     path_frame=rp.PATH_IS_BARE_NAME)
 
-        document = sb.build_document(held, root, source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, root, source="p.zip")
 
         component = self._component(document, "b.zip")
         self.assertEqual(self._digest_of(b"the real file in the tree"),
@@ -673,7 +713,7 @@ class TestOneComponentPerPath(_Bench):
         # two components sharing one name, which the identity rule forbids.
         # What matters is that the FILE keeps its own digest, and it does.
         self.assertEqual(rp.ARCHIVE_OUTSIDE_THE_ANALYSED_ROOT,
-                         self._properties_of(component)[sb.CAUSE_CODE])
+                         self._properties_of(component)[sb.ANOMALY_CODE])
 
     def test_a_bare_name_that_collides_with_nothing_keeps_its_own_digest(self):
         """The other half of the same rule. Nothing in the tree answers to this
@@ -686,8 +726,7 @@ class TestOneComponentPerPath(_Bench):
         held.record(rp.ARCHIVE_OUTSIDE_THE_ANALYSED_ROOT, "b.zip",
                     digest=elsewhere, path_frame=rp.PATH_IS_BARE_NAME)
 
-        document = sb.build_document(held, root, source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, root, source="p.zip")
 
         component = self._component(document, "b.zip")
         self.assertEqual(elsewhere, component["hashes"][0]["content"])
@@ -721,8 +760,7 @@ class TestOneComponentPerPath(_Bench):
         held.record(rp.ARCHIVE_OUTSIDE_THE_ANALYSED_ROOT, "b.txt",
                     digest=from_elsewhere, path_frame=rp.PATH_IS_BARE_NAME)
 
-        document = sb.build_document(held, root, source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, root, source="p.zip")
 
         self.assertEqual(
             taken_during,
@@ -800,22 +838,31 @@ class TestTheProperties(_Bench):
         self.assertEqual(set(), set(sb.METADATA_PROPERTY_NAMES)
                          & set(sb.COMPONENT_PROPERTY_NAMES))
 
-    def test_every_property_is_emitted_even_when_its_value_is_not_computable(self):
-        """AN OMISSION ASSERTS. A property that only appeared in the favourable
-        case would read, by its absence, as "not applicable" rather than "not
-        determined" -- and the two are not the same fact.
+    def test_a_property_appears_only_when_something_abnormal_happened(self):
+        """THE PREMISE OF THIS TEST INVERTED IN 3.0, and it was not adjusted:
+        it was rewritten, because what it used to assert stopped being true.
 
-        The equality below (not a subset check) is also where the LAST of the
-        four points the spike left open (AC-1.4) is proven: WHERE A PROPERTY
-        IS ADMITTED, read from the schema on 13 September 2026,
-        `definitions.component.additionalProperties` is `false` -- a
-        component's `properties` array holds these five names and no other,
-        so asserting the set is EQUAL to the declared table (never merely a
-        superset of it) is what stands in for that schema constraint here,
-        `jsonschema` itself being out of reach of this suite.
+        Until then every property was emitted on every component, on the
+        ground that AN OMISSION ASSERTS -- a property appearing only in the
+        favourable case would read, by its absence, as "not applicable" rather
+        than "not determined". That reasoning holds under a positive-only
+        oracle, where a silence cannot be told apart from an unasked question.
+
+        The document now promises the opposite on anomalies: everything
+        abnormal that can be observed is written. So the omission asserts
+        something precise -- "nothing abnormal happened to this path" -- and
+        writing it out seven hundred times says no more than leaving it out.
+
+        WHAT MUST NOT BE LOST WITH IT is the second thing the old equality
+        held: `definitions.component.additionalProperties` is `false` in the
+        schema (read on 13 September 2026), so a component's `properties` may
+        hold the declared names and NO other. An equality cannot stand in for
+        that any more -- the array is usually absent -- so the INCLUSION does,
+        and it is checked on every component of both runs below.
 
         The run under test is the worst one available: a directory source, so
-        there is no depth to report, and nothing was extracted."""
+        nothing was extracted and nothing went wrong.
+        """
         source = self.dir / "given"
         source.mkdir()
         (source / "a.txt").write_text("a")
@@ -823,75 +870,114 @@ class TestTheProperties(_Bench):
 
         document = sb.build_document(prepared.report, prepared.tree,
                                      source=str(source),
-                                     source_digest=prepared.digest,
-                                     source_kind=sb.SOURCE_IS_DIRECTORY)
+                                     source_digest=prepared.digest)
 
+        # `metadata` still carries its whole table: the one property left is
+        # written on every document, favourable or not, because it is the flag
+        # that says whether the promise holds at all.
         emitted = {p["name"] for p in document["metadata"]["properties"]}
         self.assertEqual(set(sb.METADATA_PROPERTY_NAMES), emitted)
+
         for component in document["components"]:
             with self.subTest(name=component["name"]):
-                self.assertEqual(set(sb.COMPONENT_PROPERTY_NAMES),
-                                 {p["name"] for p in component["properties"]})
+                self.assertNotIn("properties", component)
+
+    def test_no_component_is_ever_silent_about_a_missing_digest(self):
+        """THE INVARIANT THAT REPLACES `digestState`: a component carries
+        either a digest or an anomaly saying why it has none.
+
+        `hashes` has no way to say "not computed", which is the whole reason a
+        property said it before. Saying it on every component -- including the
+        ones whose digest WAS computed -- is what 3.0 stopped doing; saying it
+        where it is missing is what must survive, or a component could go
+        silent on the one thing this document exists to attest.
+        """
+        source = self.dir / "given"
+        source.mkdir()
+        (source / "a.txt").write_text("a")
+        (source / "a.txt").chmod(0o444)
+        prepared = ux.prepare_source(str(source))
+        document = sb.build_document(prepared.report, prepared.tree,
+                                     source=str(source),
+                                     source_digest=prepared.digest)
+
+        for component in document["components"] + [
+                document["metadata"]["component"]]:
+            with self.subTest(name=component["name"]):
+                self.assertTrue(
+                    component.get("hashes")
+                    or self._anomalies_of(component)
+                    or component["type"] == sb.TYPE_NOT_A_FILE,
+                    "a component with neither a digest nor a reason")
+                # The inclusion that stands in for `additionalProperties`.
+                self.assertLessEqual(
+                    set(self._properties_of(component)),
+                    set(sb.COMPONENT_PROPERTY_NAMES))
 
     def test_a_property_value_is_always_a_string_even_when_it_is_a_number(self):
         """The schema says a property value is a string. Numbers are converted
-        here, explicitly, rather than left to a serialiser to decide."""
+        here, explicitly, rather than left to a serialiser to decide.
+
+        TESTED ON THE HELPER AND NOT ONLY ON A DOCUMENT, since 3.0: the four
+        numeric properties that used to exercise this on every document -- two
+        depths and two counts -- are gone, so a document alone can no longer
+        reach the conversion at all. Dropping the test with them would have
+        retired a guard that still applies to every property this package
+        writes in future.
+        """
+        self.assertEqual([{"name": "unboxr:x", "value": "12"}],
+                         sb._properties((("unboxr:x", 12),)))
+
         archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
         _, document = self._document_of(archive)
         everywhere = list(document["metadata"]["properties"])
         for component in document["components"]:
-            everywhere.extend(component["properties"])
-        everywhere.extend(document["metadata"]["component"]["properties"])
+            everywhere.extend(component.get("properties", []))
+        everywhere.extend(
+            document["metadata"]["component"].get("properties", []))
         for entry in everywhere:
             with self.subTest(name=entry["name"]):
                 self.assertIsInstance(entry["value"], str)
 
-    def test_the_depth_of_a_directory_run_is_not_applicable_and_never_zero(self):
-        """`prepare_source` returns a directory as it is: no flattening happens
-        at all. Writing `0` would assert a measurement that was never taken."""
-        source = self.dir / "given"
-        source.mkdir()
-        (source / "a.txt").write_text("a")
-        prepared = ux.prepare_source(str(source))
+    def test_the_seven_zip_that_ran_is_named_as_a_tool_without_its_path(self):
+        """WHAT RAN, NOT WHAT THE MACHINE HAS. Until 3.0 the document wrote the
+        machine's whole capability profile -- availability and two counts --
+        on every document, whether 7-Zip had anything to do with the result or
+        not. That described the environment rather than the provenance, and it
+        made two machines produce two different documents even when the
+        difference had changed nothing.
+
+        THE PATH STILL DOES NOT GET IN, and that part is unchanged: it differs
+        from one machine to the next and would reopen a divergence in a
+        document meant to be compared. The STEM is what is written, and it is
+        also the identity that matters -- `7z`, `7za`, `7zr` and `7zz` are
+        different products with different coverage.
+        """
+        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
+        prepared = ux.prepare_source(str(archive), workspace=self.dir / "w")
+        binary = str(Path("/nowhere/at/all") / "7zz.exe")
+        prepared.report.seven_zip_used = binary
 
         document = sb.build_document(prepared.report, prepared.tree,
-                                     source=str(source),
-                                     source_digest=prepared.digest,
-                                     source_kind=sb.SOURCE_IS_DIRECTORY)
+                                     source=str(archive),
+                                     source_digest=prepared.digest)
 
-        metadata = {p["name"]: p["value"]
-                    for p in document["metadata"]["properties"]}
-        self.assertEqual(sb.NOT_APPLICABLE, metadata[sb.DEPTH_REACHED])
-        self.assertEqual(sb.NOT_APPLICABLE, metadata[sb.DEPTH_LIMIT])
-        self.assertEqual(sb.SOURCE_IS_DIRECTORY, metadata[sb.SOURCE_KIND])
+        tools = document["metadata"]["tools"]["components"]
+        self.assertEqual(["unboxr", "7zz"], [t["name"] for t in tools])
+        self.assertEqual("application", tools[1]["type"])
+        # A binary that will not say its version keeps its entry all the same:
+        # dropping the tool would hide that 7-Zip ran at all.
+        self.assertNotIn("version", tools[1])
+        self.assertNotIn(binary, sb.serialise(document))
 
-    def test_the_document_declares_that_this_package_excludes_nothing(self):
-        """Whether `__pycache__` or `node_modules` belong in an analysed corpus
-        is the consumer policy, applied after extraction. Saying so out loud
-        beats leaving it to be discovered."""
+    def test_a_run_that_never_called_seven_zip_names_only_unboxr(self):
+        """NAMING A TOOL THAT DID NOT RUN WOULD BE A FALSE PROVENANCE, and it
+        is the failure mode the old availability property had by design: it
+        was written on every document, 7-Zip or no 7-Zip."""
         archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
         _, document = self._document_of(archive)
-        metadata = {p["name"]: p["value"]
-                    for p in document["metadata"]["properties"]}
-        self.assertEqual(sb.NO_EXCLUSION, metadata[sb.EXCLUSION_POLICY])
-
-    def test_the_capability_of_the_machine_is_declared_without_its_path(self):
-        """`NFR` of the consumer aside, the fact matters: two machines, one
-        archive, two corpora. The BINARY PATH does not get in -- it differs
-        from one machine to the next and would reopen a divergence in a
-        document meant to be compared. Availability answers the question."""
-        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
-        _, document = self._document_of(archive)
-        metadata = {p["name"]: p["value"]
-                    for p in document["metadata"]["properties"]}
-        self.assertIn(metadata[sb.SEVEN_ZIP_AVAILABLE], ("true", "false"))
-        profile = ux.probe_capability_profile()
-        self.assertEqual(str(profile.recognised_extensions),
-                         metadata[sb.RECOGNISED_EXTENSIONS])
-        self.assertEqual(str(profile.extensions_needing_seven_zip),
-                         metadata[sb.EXTENSIONS_NEEDING_SEVEN_ZIP])
-        if profile.seven_zip_binary:
-            self.assertNotIn(profile.seven_zip_binary, sb.serialise(document))
+        tools = document["metadata"]["tools"]["components"]
+        self.assertEqual(["unboxr"], [t["name"] for t in tools])
 
 
 # ---------------------------------------------------------------------------
@@ -899,37 +985,15 @@ class TestTheProperties(_Bench):
 # ---------------------------------------------------------------------------
 class TestTheWarningsTheDocumentCarries(_Bench):
 
-    def test_the_document_says_what_it_does_not_prove(self):
-        """A TECHNICAL caveat, about this document and nothing else: it does
-        not claim anything about what is absent from it, and it carries no
-        verdict.
-
-        THE THIRD FRAGMENT ARRIVED WITH THE CLAUSE IT HOLDS. This test works
-        by `assertIn` on fragments, so ADDING a clause to the warning leaves
-        it green -- and REMOVING that clause again would leave it green too.
-        A clause nothing holds becomes false in silence, which is the defect
-        this suite has already paid for once. The clause and its fragment are
-        one gesture.
-        """
-        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
-        _, document = self._document_of(archive)
-        metadata = {p["name"]: p["value"]
-                    for p in document["metadata"]["properties"]}
-        scope = metadata[sb.DOCUMENT_SCOPE]
-        self.assertIn("attests NOTHING about anything absent from it", scope)
-        self.assertIn("no verdict of any kind", scope)
-        self.assertIn("means none was supplied", scope)
-
-    def test_the_oracle_reminder_is_read_from_its_one_constant(self):
-        """Read, never retyped. It used to exist only as prose in a docstring
-        and as a logging format string beginning with a placeholder -- neither
-        of which a document can reuse."""
-        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
-        _, document = self._document_of(archive)
-        metadata = {p["name"]: p["value"]
-                    for p in document["metadata"]["properties"]}
-        self.assertEqual(rp.ORACLE_REMINDER_SENTENCE, metadata[sb.ORACLE_REMINDER])
-        self.assertNotIn("%s", metadata[sb.ORACLE_REMINDER])
+    # `test_the_document_says_what_it_does_not_prove` and
+    # `test_the_oracle_reminder_is_read_from_its_one_constant` were REMOVED in
+    # 3.0 with the two properties they held, `unboxr:documentScope` and
+    # `unboxr:oracleReminder`. Both said, on every document, something that is
+    # true of every document this package will ever write -- which is the
+    # definition of a README sentence, not of a per-document field. The
+    # statements did not disappear: the README carries them, and the two tests
+    # below still hold the one place the prose is READ from rather than
+    # retyped.
 
     def test_the_command_composes_its_reminder_on_that_same_constant(self):
         """One sentence, one home. The counting prefix is a logging concern and
@@ -978,15 +1042,12 @@ class TestTheDocumentIsDeterministic(_Bench):
         self.assertEqual(self._without_the_volatile_fields(first),
                          self._without_the_volatile_fields(second))
 
-    def test_the_two_volatile_fields_are_named_in_the_document_itself(self):
-        """Making them comparable is another story. Declaring them is this
-        one: an omission would assert that they are stable."""
-        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
-        _, document = self._document_of(archive)
-        metadata = {p["name"]: p["value"]
-                    for p in document["metadata"]["properties"]}
-        self.assertEqual("serialNumber, metadata.timestamp",
-                         metadata[sb.VOLATILE_FIELDS])
+    # `test_the_two_volatile_fields_are_named_in_the_document_itself` was
+    # REMOVED in 3.0 with `unboxr:volatileFields`. CycloneDX defines both
+    # `serialNumber` and `metadata.timestamp` as belonging to the moment a
+    # document is made; restating that in a property of this package's own was
+    # paraphrasing the standard, and a paraphrase is one more thing that can
+    # drift away from what it repeats.
 
     def test_the_components_are_sorted_on_a_string_and_not_on_a_raw_path(self):
         """A sort on a raw `Path` is not portable: the same tree would be
@@ -1130,14 +1191,21 @@ class TestTheCommandWritesTheDocument(_CommandBench):
         metadata = {p["name"]: p["value"]
                     for p in document["metadata"]["properties"]}
         self.assertEqual(sb.OUTCOME_FAILED, metadata[sb.EXTRACTION_OUTCOME])
-        self.assertEqual(rp.ZSTD_NOT_SUPPORTED,
-                         self._properties_of(
-                             self._component(document, "p.tar.zst"))[sb.CAUSE_CODE])
+        # ON THE SUBJECT, NOT AMONG THE COMPONENTS. The refused container IS
+        # the input, which `metadata.component` already names; listing it twice
+        # was the duplication 3.0 removed, so its anomaly moved to the one
+        # place that still names it.
+        subject = document["metadata"]["component"]
+        self.assertEqual("p.tar.zst", subject["name"])
+        self.assertEqual([rp.ZSTD_NOT_SUPPORTED], self._anomalies_of(subject))
+        self.assertEqual([], [c for c in document["components"]
+                              if c["name"] == "p.tar.zst"])
         for component in document["components"]:
             with self.subTest(name=component["name"]):
-                self.assertNotEqual(sb.NO_ENTRY,
-                                    self._properties_of(component)[sb.CAUSE_CODE],
-                                    "no file component: there was no tree")
+                self.assertTrue(self._anomalies_of(component),
+                                "no file component: there was no tree, so "
+                                "every component here comes from the report "
+                                "and carries the reason it is there")
 
     def test_a_source_that_is_already_a_directory_is_inventoried_where_it_is(self):
         """`prepare_source` returns it as it is: nothing is extracted, the
@@ -1157,9 +1225,10 @@ class TestTheCommandWritesTheDocument(_CommandBench):
         document = self._read(document_path)
         metadata = {p["name"]: p["value"]
                     for p in document["metadata"]["properties"]}
-        self.assertEqual(sb.SOURCE_IS_DIRECTORY, metadata[sb.SOURCE_KIND])
         self.assertEqual(sb.OUTCOME_COMPLETE, metadata[sb.EXTRACTION_OUTCOME])
-        self.assertEqual(sb.NOT_APPLICABLE, metadata[sb.DEPTH_REACHED])
+        # `sourceKind` said what `metadata.component.type` already says.
+        self.assertEqual(sb.TYPE_NOT_A_FILE,
+                         document["metadata"]["component"]["type"])
         self.assertEqual({".git/config", "pkg.py"},
                          {c["name"] for c in document["components"]})
 
@@ -1177,8 +1246,7 @@ class TestTheCommandWritesTheDocument(_CommandBench):
             prepared = ux.prepare_source(str(archive), workspace=self.dir / "w")
             document = sb.build_document(prepared.report, prepared.tree,
                                          source=str(archive),
-                                         source_digest=prepared.digest,
-                                         source_kind=sb.SOURCE_IS_ARCHIVE)
+                                         source_digest=prepared.digest)
 
         self.assertIn("bomFormat", document)
         self.assertEqual("", out.getvalue())
@@ -1366,7 +1434,8 @@ class TestADirectoryPathIsNeverCalledAFile(_Bench):
         one `file` would be a false statement in a document meant as evidence;
         it is typed `data`, the one value that asserts a collection rather than
         a single file or a piece of software. What actually tells it apart is
-        `unboxr:digestState`, which says `not_a_file` and is always emitted.
+        the anomaly `not_regular_file`, which since 3.0 is also what the type
+        is COMPUTED from -- one fact, stated once, read in two places.
 
         `--no-archive-dir` is used here (rather than the default mode) so the
         occupied directory is named after the WORKSPACE ("w"), never after
@@ -1384,19 +1453,18 @@ class TestADirectoryPathIsNeverCalledAFile(_Bench):
                                      no_archive_dir=True)
         document = sb.build_document(prepared.report, prepared.tree,
                                      source=str(archive),
-                                     source_digest=prepared.digest,
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+                                     source_digest=prepared.digest)
 
         component = self._component(document, "w")
         self.assertEqual(sb.TYPE_NOT_A_FILE, component["type"])
         self.assertNotEqual(sb.TYPE_FILE, component["type"])
         self.assertNotIn("hashes", component)
-        properties = self._properties_of(component)
-        self.assertEqual(sb.DIGEST_NOT_A_FILE, properties[sb.DIGEST_STATE])
-        self.assertEqual(rp.DESTINATION_ALREADY_OCCUPIED,
-                         properties[sb.CAUSE_CODE],
-                         "its cause is never lost: that is the constraint that "
-                         "decided between the two honest ways of writing it")
+        # The anomaly that DID bring it here explains the missing digest on its
+        # own; `read_failed` is not appended beside it, because nothing tried
+        # to read a directory and failed.
+        self.assertEqual([rp.DESTINATION_ALREADY_OCCUPIED],
+                         self._anomalies_of(component))
+        self.assertNotIn(sb.READ_FAILED, self._anomalies_of(component))
 
 
 class TestAFileThatWasNeverADirectoryIsNeverCalledOne(_Bench):
@@ -1412,17 +1480,18 @@ class TestAFileThatWasNeverADirectoryIsNeverCalledOne(_Bench):
                                                           # that failed, not a
                                                           # directory
 
-        document = sb.build_document(held, self._tree(), source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, self._tree(), source="p.zip")
 
         component = self._component(document, "vendor/inner.zip")
         self.assertEqual(sb.TYPE_FILE, component["type"],
                          "a container that was hashed and destroyed is a "
                          "file, even when its digest could not be taken")
-        self.assertEqual(sb.DIGEST_READ_FAILED,
-                         self._properties_of(component)[sb.DIGEST_STATE])
+        # THE GUARD THAT KEEPS IT FROM GOING SILENT. `nested_container_opened`
+        # writes no property, so without the fallback this component would
+        # carry neither a digest nor a reason.
+        self.assertIn(sb.READ_FAILED, self._anomalies_of(component))
 
-    def test_a_container_already_gone_by_the_time_this_ran_is_a_read_failure_too(self):
+    def test_a_container_already_gone_by_the_time_this_ran_is_not_a_directory(self):
         """`EXTRACTION_KEPT_UNDER_PROVISIONAL_NAME` is recorded with no digest
         by design: `archive.unlink()` already succeeded (`extraction.py`), so
         the file is gone. It was never a directory."""
@@ -1430,13 +1499,17 @@ class TestAFileThatWasNeverADirectoryIsNeverCalledOne(_Bench):
         held.record(rp.EXTRACTION_KEPT_UNDER_PROVISIONAL_NAME, "archive_deadbeef",
                     path_frame=rp.PATH_IS_TREE_RELATIVE)
 
-        document = sb.build_document(held, self._tree(), source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, self._tree(), source="p.zip")
 
         component = self._component(document, "archive_deadbeef")
         self.assertEqual(sb.TYPE_FILE, component["type"])
-        self.assertEqual(sb.DIGEST_READ_FAILED,
-                         self._properties_of(component)[sb.DIGEST_STATE])
+        self.assertNotEqual(sb.TYPE_NOT_A_FILE, component["type"])
+        self.assertNotIn("hashes", component)
+        # ITS OWN CAUSE IS THE EXPLANATION, and no `read_failed` is invented
+        # beside it. Saying a read failed would assert an event that never
+        # took place: the file was gone before anything tried to read it.
+        self.assertEqual([rp.EXTRACTION_KEPT_UNDER_PROVISIONAL_NAME],
+                         self._anomalies_of(component))
 
 
 class TestATreeThatCannotBeWalkedFailsRatherThanLies(_Bench):
@@ -1451,7 +1524,7 @@ class TestATreeThatCannotBeWalkedFailsRatherThanLies(_Bench):
 
         with self.assertRaises(OSError):
             sb.build_document(held, self.dir / "does" / "not" / "exist",
-                              source="p.zip", source_kind=sb.SOURCE_IS_ARCHIVE)
+                              source="p.zip")
 
 
 class TestASignedURLNeverLeaksIntoTheDocument(_Bench):
@@ -1474,40 +1547,13 @@ class TestASignedURLNeverLeaksIntoTheDocument(_Bench):
         self.assertEqual("p.zip", sb._bare_name("/tmp/workspace/p.zip"))
 
 
-class TestDepthIsNeverAMeasurementThatWasNeverTaken(_Bench):
-    """Review of story 14.4. `report.depth_reached` defaults to `0`, not
-    `None`: on the failure path, where flattening never starts, that default
-    used to read as a genuine "stopped at level 0" instead of "never ran".
-    `depth_limit` is the reliable signal -- it is set, together with
-    `depth_reached`, at the very first line of `flatten_nested_archives`."""
-
-    def test_depth_reached_is_unknown_not_zero_when_flattening_never_started(self):
-        held = ux.new_report()
-        held.record(rp.EXTRACTION_FAILED, "not_an_archive.zip")
-        # depth_limit and depth_reached both untouched: their dataclass
-        # defaults, exactly the state of a report handed back by a
-        # `prepare_source` that raised before flattening began.
-
-        document = sb.build_document(held, None, source="not_an_archive.zip",
-                                     source_kind=sb.SOURCE_UNDETERMINED)
-
-        properties = {p["name"]: p["value"]
-                     for p in document["metadata"]["properties"]}
-        self.assertEqual(sb.UNKNOWN, properties[sb.DEPTH_REACHED])
-        self.assertEqual(sb.UNKNOWN, properties[sb.DEPTH_LIMIT])
-
-    def test_depth_reached_zero_is_still_reported_when_flattening_genuinely_ran(self):
-        held = ux.new_report()
-        held.depth_limit = 10
-        held.depth_reached = 0
-
-        document = sb.build_document(held, self._tree(), source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
-
-        properties = {p["name"]: p["value"]
-                     for p in document["metadata"]["properties"]}
-        self.assertEqual("0", properties[sb.DEPTH_REACHED])
-        self.assertEqual("10", properties[sb.DEPTH_LIMIT])
+# `TestDepthIsNeverAMeasurementThatWasNeverTaken` was REMOVED in 3.0 with
+# `unboxr:depthReached` and `unboxr:depthLimit`. The bound only ever mattered
+# when it was REACHED, and that case files a `maximum_depth_reached` anomaly on
+# every container left closed -- which names the situation where the two
+# numbers only described it. The value of `--max-depth` is no longer in the
+# document; that is a declared loss, written down in the story rather than
+# discovered later.
 
 
 class TestContainersNotOpenedCountsComponentsNotRecords(_Bench):
@@ -1523,19 +1569,17 @@ class TestContainersNotOpenedCountsComponentsNotRecords(_Bench):
         held.record(rp.TAR_CONTENT_PARTLY_MOVED, "a.tar")
         self.assertEqual(2, len(held.not_opened), "two records, as expected")
 
-        document = sb.build_document(held, self._tree(), source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, self._tree(), source="p.zip")
 
-        properties = {p["name"]: p["value"]
-                     for p in document["metadata"]["properties"]}
         not_opened_components = [c for c in document["components"]
                                  if c["name"] == "a.tar"]
         self.assertEqual(1, len(not_opened_components),
                          "one component: AC-4.1's identity rule")
-        self.assertEqual(str(len(not_opened_components)),
-                         properties[sb.CONTAINERS_NOT_OPENED],
-                         "the amplitude of the amputation matches what the "
-                         "components array actually shows")
+        # Both causes are on that one component, in order: the identity rule
+        # merges the records without dropping either reason.
+        self.assertEqual([rp.TAR_REFUSED_BY_SECURITY_FILTER,
+                          rp.TAR_CONTENT_PARTLY_MOVED],
+                         self._anomalies_of(not_opened_components[0]))
 
 
 class TestACauseOrderNeverDependsOnFillOrder(_Bench):
@@ -1559,15 +1603,13 @@ class TestACauseOrderNeverDependsOnFillOrder(_Bench):
         tree_a.mkdir()
         tree_b = self.dir / "tree_b"
         tree_b.mkdir()
-        doc_forward = sb.build_document(forward, tree_a, source="p.zip",
-                                        source_kind=sb.SOURCE_IS_ARCHIVE)
-        doc_backward = sb.build_document(backward, tree_b, source="p.zip",
-                                         source_kind=sb.SOURCE_IS_ARCHIVE)
+        doc_forward = sb.build_document(forward, tree_a, source="p.zip")
+        doc_backward = sb.build_document(backward, tree_b, source="p.zip")
 
         code_forward = self._properties_of(
-            self._component(doc_forward, "a.tar"))[sb.CAUSE_CODE]
+            self._component(doc_forward, "a.tar"))[sb.ANOMALY_CODE]
         code_backward = self._properties_of(
-            self._component(doc_backward, "a.tar"))[sb.CAUSE_CODE]
+            self._component(doc_backward, "a.tar"))[sb.ANOMALY_CODE]
         self.assertEqual(code_forward, code_backward)
 
 
@@ -1835,7 +1877,6 @@ class TestTheDocumentCarriesTheLink(_Bench):
         return sb.build_document(prepared.report, prepared.tree,
                                  source=str(archive),
                                  source_digest=prepared.digest,
-                                 source_kind=sb.SOURCE_IS_ARCHIVE,
                                  linked_bom=link)
 
     def test_the_link_is_written_at_the_root_and_never_on_metadata(self):
@@ -1933,32 +1974,13 @@ class TestTheAbsenceOfALinkIsAStatedFact(_Bench):
         document = self._document_without_a_link()
         self.assertNotIn("externalReferences", document)
 
-    def test_the_document_says_what_an_absent_reference_means(self):
-        """Without it, a reader who is holding the other document would read
-        the silence as saying the two do not go together.
-
-        THE CLAUSE IS TRUE IN BOTH CASES, because the warning is emitted on
-        every document: it states the rule for READING an absent reference,
-        never the state of this particular document.
-        """
-        document = self._document_without_a_link()
-        metadata = {p["name"]: p["value"]
-                    for p in document["metadata"]["properties"]}
-        self.assertIn("means none was supplied", metadata[sb.DOCUMENT_SCOPE])
-
-    def test_the_same_clause_is_there_when_a_link_is_supplied(self):
-        """Emitted systematically, so it cannot be written as if the link were
-        always absent."""
-        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
-        prepared = ux.prepare_source(str(archive), workspace=self.dir / "w")
-        document = sb.build_document(prepared.report, prepared.tree,
-                                     source=str(archive),
-                                     source_digest=prepared.digest,
-                                     source_kind=sb.SOURCE_IS_ARCHIVE,
-                                     linked_bom=GOOD_LINK)
-        metadata = {p["name"]: p["value"]
-                    for p in document["metadata"]["properties"]}
-        self.assertIn("means none was supplied", metadata[sb.DOCUMENT_SCOPE])
+    # `test_the_document_says_what_an_absent_reference_means` and
+    # `test_the_same_clause_is_there_when_a_link_is_supplied` were REMOVED in
+    # 3.0: both held a clause of `unboxr:documentScope`, the prose property
+    # that went to the README with the rest of it. What the clause said -- that
+    # an absent reference means none was supplied, never that this extraction
+    # belongs to none -- is a rule of READING this format, true of every
+    # document, which is what a README is for.
 
     def test_the_link_adds_no_property_of_this_package_to_the_document(self):
         """A property whose native field the schema already provides does not
@@ -1970,7 +1992,6 @@ class TestTheAbsenceOfALinkIsAStatedFact(_Bench):
         document = sb.build_document(prepared.report, prepared.tree,
                                      source=str(archive),
                                      source_digest=prepared.digest,
-                                     source_kind=sb.SOURCE_IS_ARCHIVE,
                                      linked_bom=GOOD_LINK)
         text = sb.serialise(document)
         names = {p["name"] for p in document["metadata"]["properties"]}
@@ -1988,7 +2009,6 @@ class TestTheInjectionHooksSurviveTheLink(_Bench):
         held = ux.new_report()
         document = sb.build_document(
             held, self._tree(), source="p.zip",
-            source_kind=sb.SOURCE_IS_ARCHIVE,
             serial_number="urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79",
             timestamp="2026-09-13T00:00:00+00:00")
         self.assertEqual("urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79",
@@ -1998,8 +2018,7 @@ class TestTheInjectionHooksSurviveTheLink(_Bench):
 
     def test_the_hooks_still_default_to_a_value_the_document_computes(self):
         held = ux.new_report()
-        document = sb.build_document(held, self._tree(), source="p.zip",
-                                     source_kind=sb.SOURCE_IS_ARCHIVE)
+        document = sb.build_document(held, self._tree(), source="p.zip")
         self.assertTrue(document["serialNumber"].startswith("urn:uuid:"))
         self.assertEqual(1, document["version"])
 
@@ -2119,7 +2138,8 @@ class TestTheCommandLinksTheDocument(_CommandBench):
         document = self._read(document_path)
         metadata = {p["name"]: p["value"]
                     for p in document["metadata"]["properties"]}
-        self.assertEqual(sb.SOURCE_IS_DIRECTORY, metadata[sb.SOURCE_KIND])
+        self.assertEqual(sb.TYPE_NOT_A_FILE,
+                         document["metadata"]["component"]["type"])
         self.assertEqual(GOOD_LINK, document["externalReferences"][0]["url"])
 
     def test_without_the_option_no_document_carries_a_link(self):
@@ -2152,11 +2172,11 @@ class _OrderBench(_Bench):
         prepared = ux.prepare_source(str(archive), workspace=self.dir / "w")
         linked = sb.build_document(
             prepared.report, prepared.tree, source=str(archive),
-            source_digest=prepared.digest, source_kind=sb.SOURCE_IS_ARCHIVE,
+            source_digest=prepared.digest,
             linked_bom=GOOD_LINK)
         plain = sb.build_document(
             prepared.report, prepared.tree, source=str(archive),
-            source_digest=prepared.digest, source_kind=sb.SOURCE_IS_ARCHIVE)
+            source_digest=prepared.digest)
 
         source_dir = self.dir / "src"
         source_dir.mkdir()
@@ -2165,12 +2185,11 @@ class _OrderBench(_Bench):
                                            workspace=self.dir / "w2")
         directory = sb.build_document(
             from_directory.report, from_directory.tree, source=str(source_dir),
-            source_digest=from_directory.digest,
-            source_kind=sb.SOURCE_IS_DIRECTORY)
+            source_digest=from_directory.digest)
 
         failed = sb.build_document(
             prepared.report, None, source=str(archive),
-            source_digest=prepared.digest, source_kind=sb.SOURCE_IS_ARCHIVE)
+            source_digest=prepared.digest)
 
         # A FILE WHOSE DIGEST COULD NOT BE READ. The subject of a directory
         # document already gives a `metadata.component` with no `hashes`, but
@@ -2181,8 +2200,7 @@ class _OrderBench(_Bench):
         try:
             unhashed = sb.build_document(
                 prepared.report, prepared.tree, source=str(archive),
-                source_digest=prepared.digest,
-                source_kind=sb.SOURCE_IS_ARCHIVE)
+                source_digest=prepared.digest)
         finally:
             sb._digest_of_existing_file = original
 
@@ -2272,8 +2290,19 @@ class TestTheKeysComeOutInTheOrderOfTheSchema(_OrderBench):
         reread = json.loads(sb.serialise(document))
         self.assertEqual(["url", "comment", "type"],
                          list(reread["externalReferences"][0]))
-        self.assertEqual(["type", "bom-ref", "name", "hashes", "properties"],
+        # FILTERED TO THE KEYS THIS COMPONENT ACTUALLY HAS: since 3.0 a
+        # component carries `properties` only when something abnormal happened
+        # to it. The ORDER is what this test holds, and asserting presence as
+        # well would make it fail for a reason it is not about.
+        declared = ["type", "bom-ref", "name", "hashes", "properties"]
+        self.assertEqual([k for k in declared if k in reread["components"][0]],
                          list(reread["components"][0]))
+        # And one component that DOES carry properties, so the position of
+        # `properties` after `hashes` is really exercised.
+        with_properties = [c for c in reread["components"] if "properties" in c]
+        for component in with_properties:
+            self.assertEqual([k for k in declared if k in component],
+                             list(component))
         self.assertEqual(["type", "name", "version"],
                          list(reread["metadata"]["tools"]["components"][0]))
         self.assertEqual(["name", "value"],
@@ -2398,8 +2427,9 @@ class TestTheDocumentFoldsItsTwoKeyObjects(_OrderBench):
     def test_a_property_and_a_hash_each_take_one_line(self):
         document = self._every_shape_of_document()["linked"]
         text = sb.serialise(document)
-        self.assertIn('{ "name": "unboxr:exclusionPolicy", "value": "none" }',
-                      text)
+        self.assertIn(
+            '{ "name": "unboxr:extractionOutcome", "value": "complete" }',
+            text)
         self.assertRegex(text, r'\{ "alg": "SHA-256", "content": "[0-9a-f]+" \}')
 
     def test_no_object_of_another_shape_is_folded(self):
@@ -2448,7 +2478,16 @@ class TestTheDocumentFoldsItsTwoKeyObjects(_OrderBench):
 
     def test_the_gain_is_the_one_the_story_measured(self):
         """Measured on a FLAT zip of two files, which is the recipe the story
-        carries: 189 lines before, 33 foldable objects, 90 lines after."""
+        carries: 58 lines before, 4 foldable objects, 46 lines after.
+
+        THE THREE NUMBERS FELL WITH 3.0 and the fold's share of the gain fell
+        with them: the same document measured 189 -> 90 when every component
+        carried five properties and `metadata` carried thirteen. What folding
+        saves is proportional to how many two-key objects there are, and a
+        document that writes a property only when something went wrong has
+        almost none. The fold is kept because the objects it folds are still
+        the tissue of a document with anomalies in it -- not because it still
+        halves a clean one."""
         archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a"),
                                                     ("b.txt", "b")])
         _, document = self._document_of(archive)
@@ -2457,12 +2496,12 @@ class TestTheDocumentFoldsItsTwoKeyObjects(_OrderBench):
         foldable = [o for o in self._objects_of(document)
                     if frozenset(o) in sb.FOLDED_KEY_SETS]
         recipe = ("measured on the FLAT two-file zip of the story's recipe; "
-                  "a document with a link measures 196 -> 97. If a property "
+                  "a document with a link measures 65 -> 53. If a property "
                   "was added to the document, re-measure and update all three "
                   "numbers here and in the story -- do not relax the test")
-        self.assertEqual(33, len(foldable), recipe)
-        self.assertEqual(189, len(unfolded), recipe)
-        self.assertEqual(90, len(folded), recipe)
+        self.assertEqual(4, len(foldable), recipe)
+        self.assertEqual(58, len(unfolded), recipe)
+        self.assertEqual(46, len(folded), recipe)
 
 
 # ---------------------------------------------------------------------------
@@ -2495,17 +2534,73 @@ class TestTheCalculatedTimestampStopsAtTheSecond(_OrderBench):
         precise = "2026-09-13T00:00:00.123456+00:00"
         document = sb.build_document(
             prepared.report, prepared.tree, source=str(archive),
-            source_digest=prepared.digest, source_kind=sb.SOURCE_IS_ARCHIVE,
+            source_digest=prepared.digest,
             timestamp=precise)
         self.assertEqual(precise, document["metadata"]["timestamp"])
 
-    def test_the_timestamp_is_still_declared_volatile(self):
-        """Reducing a precision does not make a field stable, and nothing here
-        claims it does."""
-        document = self._every_shape_of_document()["plain"]
-        metadata = {p["name"]: p["value"]
-                    for p in document["metadata"]["properties"]}
-        self.assertIn("metadata.timestamp", metadata[sb.VOLATILE_FIELDS])
+class TestParentContainerSurvivesOnlyWhereThePathCannotSayIt(_Bench):
+    """Arbitrage 5 of story 14.10 (crypto-scan), decided 16 September 2026.
+
+    The other three per-component properties were removed because the path
+    states its own ancestry: a nested archive is flattened into a directory
+    carrying its own name, so `outer.zip/inner.zip/a.c` says where it came
+    from and each container it names is itself a component. A consumer reads
+    the ancestry off the paths.
+
+    THAT READING FAILS IN THREE CASES, and the ordinary one is a path through
+    a PROVISIONAL extraction directory, whose name is a digest of a path and
+    says nothing about what it holds. A consumer walking prefixes there finds
+    no parent and would conclude there is NONE -- an *unknown* turned into a
+    favourable answer, which is precisely what this project's rules forbid.
+
+    So the property survives exactly there, with `not_determinable` as its
+    only value, and the absence of the property is what says "read the path".
+    """
+
+    def test_a_path_through_a_provisional_directory_says_it_cannot_be_read(self):
+        held = ux.new_report()
+        provisional = "archive_" + "a" * ux.PROVISIONAL_DIGEST_LENGTH
+        held.record(rp.EXTRACTION_KEPT_UNDER_PROVISIONAL_NAME,
+                    provisional + "/code/aes.c", digest="b" * 64,
+                    path_frame=rp.PATH_IS_TREE_RELATIVE)
+
+        document = sb.build_document(held, None, source="p.zip")
+
+        component = self._component(document, provisional + "/code/aes.c")
+        self.assertEqual(sb.NOT_DETERMINABLE,
+                         self._properties_of(component)[sb.PARENT_CONTAINER])
+
+    def test_the_only_value_it_ever_takes_is_not_determinable(self):
+        """Never the name of a real parent. Writing that back would reinstate
+        exactly what 3.0 removed -- a property repeating what the path says."""
+        inner = self._zip_bytes([("code/aes.c", "int a;")])
+        archive = self._zip_at(self.dir / "p.zip",
+                               [("vendor/inner.zip", inner)])
+
+        _, document = self._document_of(archive)
+
+        written = [self._properties_of(c).get(sb.PARENT_CONTAINER)
+                   for c in document["components"]]
+        self.assertEqual([], [v for v in written
+                              if v not in (None, sb.NOT_DETERMINABLE)])
+
+    def test_an_ordinary_nested_file_carries_no_parent_at_all(self):
+        """Its path states its ancestry and the container is a component of
+        this document; a property saying it again would be the duplication
+        this release exists to remove."""
+        inner = self._zip_bytes([("code/aes.c", "int a;")])
+        archive = self._zip_at(self.dir / "p.zip",
+                               [("vendor/inner.zip", inner)])
+
+        _, document = self._document_of(archive)
+
+        leaf = self._component(document, "vendor/inner.zip/code/aes.c")
+        self.assertNotIn(sb.PARENT_CONTAINER, self._properties_of(leaf))
+        self.assertNotIn("properties", leaf)
+        # What replaces it: the container really is here, so a consumer can
+        # match the prefix against a component it can see.
+        self.assertIn("vendor/inner.zip",
+                      {c["name"] for c in document["components"]})
 
 
 if __name__ == "__main__":

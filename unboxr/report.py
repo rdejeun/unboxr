@@ -13,13 +13,30 @@ receiving the report. The same report can be passed IN, which is what makes it
 survive a `raise` -- the one moment where the declaration matters most and
 where a return value does not exist.
 
-POSITIVE-ONLY ORACLE, HERE TOO
+CONTAINERS, AND ALSO PATHS
+--------------------------
+Most of what is filed here names a CONTAINER and what became of it. Three codes
+do not: `READ_FAILED`, `NOT_REGULAR_FILE` and `SYMLINK_NOT_FOLLOWED` name a
+PATH that is present in the tree and whose content is not attested. They have a
+kind of their own, `NOT_ATTESTED`, because the question the other four kinds
+answer -- is the content of this container in the tree? -- has no answer for a
+symbolic link or a socket. Reading this module as being about containers only
+was true until they arrived; it is not any more.
+
+THE ORACLE, AND WHERE IT STOPS
 ------------------------------
-An entry PROVES that a container was met and dealt with in the way its code
-says. An ABSENT entry proves nothing whatsoever: this report says what the
-chain saw, never what was there. No guarantee on the corpus when the 7-Zip
-binary is absent -- the capability profile below DECLARES that divergence, it
-does not close it.
+On the CORPUS, the oracle is positive only: an entry PROVES that a path was met
+and dealt with in the way its code says, and an ABSENT entry proves nothing
+about what was inside a container nobody opened. No guarantee on the corpus when
+the 7-Zip binary is absent -- the capability profile below DECLARES that
+divergence, it does not close it.
+
+On the ANOMALIES, the promise is the other way round and it is stronger: every
+abnormal event this package can observe is filed here. That is what makes a
+report with an empty `not_opened` mean something rather than nothing. It is
+bounded by what can be observed at a boundary this package crosses -- a
+truncated archive its library reads "successfully" is not one -- and the README
+names that limit rather than leaving it to be discovered.
 
 ONE TABLE, AND ONE ONLY
 -----------------------
@@ -53,7 +70,7 @@ from pathlib import Path
 
 # --- The kinds an entry can have ---------------------------------------------
 #
-# FOUR, and they are not degrees of severity. They answer one question: is the
+# FOUR OF THEM ANSWER ONE QUESTION, and they are not degrees of severity: is the
 # content of this container in the tree the caller gets back?
 #
 #   NOT_OPENED    -- it is not. This is an amputation, and this is the field
@@ -68,7 +85,25 @@ from pathlib import Path
 #                    a trace is no better than one that shrinks without a trace
 #                    -- and kept out of the amputation count on purpose.
 #
-# A fifth value, LOG_ONLY, is not a kind of entry at all: it names a logging
+# A FIFTH ANSWERS A DIFFERENT QUESTION, which is exactly why it is a kind of its
+# own and not a fifth value squeezed into the four above:
+#
+#   NOT_ATTESTED  -- the path is THERE, and its content is not attested. It
+#                    names no container at all: a symbolic link this package
+#                    deliberately does not follow, a path that is not a regular
+#                    file, a file whose bytes could not be read. "Is the content
+#                    of this container in the tree?" has no answer for any of
+#                    them, so filing them under STILL_IN_TREE -- the nearest
+#                    fit -- would make that kind stop meaning what it says.
+#                    NOT an amputation either: nothing was lost here, the
+#                    attestation was never possible in the first place.
+#
+# These arrive from the WALK of the finished tree, not from the flattening, and
+# that has one consequence worth stating where the kind is declared: they have
+# no logging message of their own, so their codes belong in CAUSE_TEXTS and
+# CAUSE_KINDS and in NEITHER of the two message tables below.
+#
+# A sixth value, LOG_ONLY, is not a kind of entry at all: it names a logging
 # message that has no container of its own -- the closing recap, which restates
 # entries already filed one by one. Recording one files nothing, which is why it
 # is declared here rather than left to a caller to remember.
@@ -76,9 +111,10 @@ NOT_OPENED = "not_opened"
 OPENED = "opened"
 STILL_IN_TREE = "still_in_tree"
 WIDENED = "widened"
+NOT_ATTESTED = "not_attested"
 LOG_ONLY = "log_only"
 
-KINDS = (NOT_OPENED, OPENED, STILL_IN_TREE, WIDENED, LOG_ONLY)
+KINDS = (NOT_OPENED, OPENED, STILL_IN_TREE, WIDENED, NOT_ATTESTED, LOG_ONLY)
 
 
 # --- The cause codes ---------------------------------------------------------
@@ -138,6 +174,21 @@ DOWNLOADED_COPY_KEPT_ALONGSIDE_THE_TREE = "downloaded_copy_kept_alongside_the_tr
 # The corpus grows.
 RECOGNISED_BY_CONTENT = "recognised_by_content"
 
+# Present, and not attested. THESE THREE NAME NO CONTAINER: they are facts about
+# a path found by walking the finished tree, which is why they carry no logging
+# message and must stay out of AMPUTATION_MESSAGES and NOT_AN_AMPUTATION -- both
+# are held by a ratchet that runs in BOTH directions against the warnings of
+# `unboxr.extraction`, so an entry no warning emits turns it red.
+#
+# They used to live in `unboxr.sbom` as the four values of a `digestState`
+# property, one of which -- "computed" -- said nothing was wrong. A document
+# that reports only what is abnormal has no use for that fourth value, and the
+# three that remain are abnormal by definition: they say a listed path carries
+# no digest, and why.
+READ_FAILED = "read_failed"
+NOT_REGULAR_FILE = "not_regular_file"
+SYMLINK_NOT_FOLLOWED = "symlink_not_followed"
+
 
 # THE table. Code -> English text. Nothing else in this package may hold a
 # second one; a test checks the sources of `cli.py` and `extraction.py` for the
@@ -193,6 +244,16 @@ CAUSE_TEXTS = {
     RECOGNISED_BY_CONTENT:
         "a container was recognised by its first bytes, its extension being "
         "absent or misleading",
+
+    READ_FAILED:
+        "a file was listed but its bytes could not be read, so it carries no "
+        "digest",
+    NOT_REGULAR_FILE:
+        "a path was listed that is not a regular file and has no content to "
+        "digest",
+    SYMLINK_NOT_FOLLOWED:
+        "a symbolic link was listed and deliberately not followed, so the "
+        "content it points at is attested under no path here",
 }
 
 # Where each code is filed. Declared here rather than chosen at the call site:
@@ -221,6 +282,10 @@ CAUSE_KINDS = {
     DOWNLOADED_COPY_KEPT_ALONGSIDE_THE_TREE: STILL_IN_TREE,
 
     RECOGNISED_BY_CONTENT: WIDENED,
+
+    READ_FAILED: NOT_ATTESTED,
+    NOT_REGULAR_FILE: NOT_ATTESTED,
+    SYMLINK_NOT_FOLLOWED: NOT_ATTESTED,
 }
 
 # MAXIMUM_DEPTH_REACHED is recorded ONE CONTAINER AT A TIME, and that is the net
@@ -486,14 +551,24 @@ class ExtractionReport:
     not_opened: list = field(default_factory=list)
     still_in_tree: list = field(default_factory=list)
     widened: list = field(default_factory=list)
+    not_attested: list = field(default_factory=list)
     depth_reached: int = 0
     depth_limit: int | None = None
+
+    # The 7-Zip binary this run ACTUALLY invoked, or None. Distinct from
+    # `capability.seven_zip_binary`, which says what the MACHINE has: a document
+    # naming every tool the machine could have used, rather than the ones that
+    # produced it, would be naming its environment instead of its provenance.
+    # Set at the call sites, never here, and the first one to run wins -- a
+    # second invocation of the same binary is not a second tool.
+    seven_zip_used: str | None = None
 
     _KIND_FIELDS = {
         OPENED: "opened",
         NOT_OPENED: "not_opened",
         STILL_IN_TREE: "still_in_tree",
         WIDENED: "widened",
+        NOT_ATTESTED: "not_attested",
     }
 
     def record(self, code: str, path, level=None, detail: str = "",

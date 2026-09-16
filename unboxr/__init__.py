@@ -67,7 +67,6 @@ from .report import (
 )
 from .sbom import (
     BOM_LINK_DOCUMENT_PATTERN,
-    DIGEST_STATES,
     InvalidBomLinkError,
     LINKED_BOM_COMMENT,
     PROPERTY_NAMES,
@@ -222,7 +221,49 @@ from .sbom import (
 # by `unboxr.cli` straight from `unboxr.extraction`; neither `__all__` nor the
 # imports above grew, because adding a name to the published surface is a
 # decision of its own and this release did not need one.
-__version__ = "2.2.0"
+# 3.0.0: the extraction document declares the ABNORMAL, and nothing else.
+# Eighteen property names become four; a component to which nothing happened
+# carries no `properties` key at all. A MAJOR version, and not a close call:
+# fourteen names were REMOVED from a published contract and two renamed, so a
+# consumer reading `unboxr:causeCode` finds nothing where it used to find a
+# value on every component.
+# WHAT IT REALLY IS, UNDERNEATH: one change of contract, from which every
+# removal follows. The positive-only oracle is a property of a DETECTOR, which
+# cannot enumerate what it missed. An extractor can: a failure to open is an
+# observable event at a boundary it crosses itself. So the oracle SPLITS --
+# positive only on the CORPUS, exhaustive on the ANOMALIES, within a bound the
+# README names -- and it is the promise on anomalies that makes an omission
+# readable. Without it the silences would be uninterpretable; with it, writing
+# `no_entry` seven hundred times says no more than leaving it out.
+# WHAT WENT, AND WHY IN ONE WORD EACH. `documentScope` and `oracleReminder`:
+# prose true of every document this package will ever write, which is a README
+# sentence. `volatileFields`: CycloneDX defines both fields as belonging to the
+# moment a document is made -- paraphrasing the standard is one more thing that
+# can drift. `exclusionPolicy`: a constant says nothing per document.
+# `sourceKind`: `metadata.component.type` already said it. `sevenZipAvailable`
+# and the two extension counts: replaced by naming the 7-Zip binary that
+# ACTUALLY RAN in `metadata.tools`, which is provenance rather than a
+# description of the machine -- and `--list-formats --json`, added at 2.2.0,
+# answers the capability question properly. The two depths: the bound only
+# mattered when it was reached, and that files an anomaly on every container
+# left closed. `containersNotOpened` and `filesWithoutDigest`: counts of what
+# the components show one by one. `digestState`: replaced by an INVARIANT --
+# every component carries a digest, or an anomaly saying why it has none, or
+# the type `data`. `nestingLevel` and `parentContainer` (except in one case):
+# the path states its own ancestry and each container it names is a component.
+# THE ONE CASE `parentContainer` SURVIVES is where that reading fails -- a path
+# through a provisional extraction directory, above all -- because a consumer
+# walking prefixes would find no parent and conclude there is NONE, turning
+# "unknown" into a favourable answer.
+# WHAT DID NOT CHANGE, AND HAD TO BE HELD DELIBERATELY: a container the
+# flattening destroyed is STILL a component, with the digest taken during the
+# run. Dropping it along with its `opened` property would have erased that
+# digest from the only document that will ever hold it, silently. Also
+# unchanged: no extraction behaviour, no tree, no traversal order.
+# `build_document` LOST A PARAMETER, `source_kind`, rather than keeping one
+# that no longer changes anything; `DIGEST_STATES` left `__all__` with the
+# states it named.
+__version__ = "3.0.0"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
@@ -243,7 +284,7 @@ __all__ = [
     "UnsupportedFormatError",
     # The document: the corpus as a record that outlives the run
     "sbom",
-    "DIGEST_STATES",
+
     "PROPERTY_NAMES",
     "build_document",
     "serialise",

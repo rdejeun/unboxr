@@ -78,13 +78,18 @@ the consumer.
 THE EXTRACTION DOCUMENT IS NOT A FIFTH GUARANTEE
 -----------------------------------------------
 `unboxr.sbom` produces the same bytes for the same tree, the serial number and
-the timestamp aside -- which the document names itself, in a field of its own.
-That is an OBSERVATION, and it is deliberately NOT added to the four
-guarantees above. The document carries what THIS machine can open, so one
-archive yields two different documents on two machines whose 7-Zip
-availability differs, legitimately and by design; promising byte-identity would
-make this contract false the first time that happened. Comparing two documents
-is something to do on one machine, under one version of this package.
+the timestamp aside -- both of which CycloneDX itself defines as belonging to
+the moment a document is made, so neither is this package's to promise. That is
+an OBSERVATION, and it is deliberately NOT added to the four guarantees above.
+
+The document names the 7-Zip binary it actually ran, so two machines that
+differ in 7-Zip availability still produce two different documents whenever
+that difference CHANGED the outcome -- fewer containers opened, a tool entry
+present or absent -- legitimately and by design; promising byte-identity would
+make this contract false the first time that happened. The divergence is
+narrower than it was, when the document wrote the machine's whole capability
+profile whether it had mattered or not, but narrower is not none. Comparing two
+documents is something to do on one machine, under one version of this package.
 
 Saying so is not pedantry: a reader who observed the stability and found the
 contract silent would conclude a promise that is not there.
@@ -107,12 +112,19 @@ WHAT THE CONTRACT DOES NOT GUARANTEE
   earlier versions extracted. In exchange the behaviour is now stable from one
   Python release to the next -- the filter being requested explicitly, the
   change of default in Python 3.14 has no effect here.
-- No guarantee on what the report says about CONTENT. It names containers,
-  what became of them, and -- since the extraction document -- the SHA-256
-  digest of each one that could still be read when it was filed. It opens
-  nothing to look inside, it says nothing about what any of it MEANS, and AN
-  ABSENT ENTRY ESTABLISHES NOTHING -- the oracle is positive only, here as
-  everywhere else in this package.
+- No guarantee on what the report says about CONTENT. It names containers and
+  paths, what became of them, and -- since the extraction document -- the
+  SHA-256 digest of each one that could still be read when it was filed. It
+  opens nothing to look inside, and it says nothing about what any of it MEANS.
+  On the corpus the oracle is positive only: AN ABSENT ENTRY ESTABLISHES
+  NOTHING about what was inside a container nobody opened.
+
+  ON THE ANOMALIES the promise runs the other way, and it is the one thing in
+  this list that is NOT a non-guarantee: every abnormal event this package can
+  observe is filed. That is what lets an empty `not_opened` mean something. It
+  is bounded by what is observable at a boundary this package crosses -- an
+  archive its own library reads "successfully" while silently returning fewer
+  members is not one -- and the README names that bound.
 - No guarantee that the provisional extraction name stays provisional. It is
   normally transitory -- the directory is renamed as soon as the archive is
   gone -- but it becomes the DEFINITIVE name of that directory whenever the
@@ -145,6 +157,7 @@ import logging
 import lzma
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -1090,9 +1103,25 @@ def find_7zip_binary() -> str | None:
     return None
 
 
-def extract_with_7zip(archive_path: Path, dest: Path, binary: str) -> None:
-    """Delegate extraction to an external 7-Zip binary (formats the stdlib will not do)."""
+def extract_with_7zip(archive_path: Path, dest: Path, binary: str,
+                      report=None) -> None:
+    """Delegate extraction to an external 7-Zip binary (formats the stdlib will not do).
+
+    THE ONE PLACE THE BINARY ACTUALLY RUNS, which is why the report is told
+    here and not at the two call sites. `find_7zip_binary()` says what the
+    MACHINE has; this says what THIS RUN used, and the extraction document
+    names the second, never the first -- a document listing every tool the
+    machine could have used would describe its environment instead of its own
+    provenance.
+
+    RECORDED BEFORE THE RETURN CODE IS READ, deliberately: a 7-Zip that ran and
+    failed still shaped this corpus -- the archive is not extracted and an
+    amputation is filed -- so it belongs in the document either way. The first
+    invocation wins; a second run of the same binary is not a second tool.
+    """
     dest.mkdir(parents=True, exist_ok=True)
+    if report is not None and getattr(report, "seven_zip_used", None) is None:
+        report.seven_zip_used = binary
     result = subprocess.run(
         [binary, "x", "-y", f"-o{dest}", str(archive_path)],
         capture_output=True, text=True, timeout=600,
@@ -1101,6 +1130,42 @@ def extract_with_7zip(archive_path: Path, dest: Path, binary: str) -> None:
         raise RuntimeError(
             f"Extraction through {binary} failed: {result.stderr.strip()[:400] or result.stdout.strip()[:400]}"
         )
+
+
+# The shape a 7-Zip banner states its version in. ONE dotted number, taken from
+# the first lines of the banner: `7-Zip 23.01 (x64)`, `7-Zip (z) 21.07 (x64)`,
+# `7-Zip [64] 16.02` and `p7zip Version 16.02` all yield theirs. Transcribed
+# from the banners themselves rather than from documentation, which none of
+# these forks publishes in a comparable way.
+_SEVEN_ZIP_VERSION = re.compile(r"\b(\d+\.\d+)\b")
+
+
+def seven_zip_version(binary: str) -> str | None:
+    """The version this binary announces, or None if it will not say.
+
+    NONE IS A REAL ANSWER HERE, not a failure to handle later. The four forks
+    that answer to `7z`, `7za`, `7zr` and `7zz` print banners of their own
+    devising, and a machine may carry one this pattern does not match. The
+    caller writes the tool WITHOUT a version in that case -- CycloneDX makes
+    `version` optional -- because dropping the whole tool entry over an
+    unreadable banner would hide the fact that 7-Zip ran at all, which is the
+    part that matters.
+
+    NEVER RAISES. A binary that has vanished between the probe and here, one
+    that hangs, one whose output does not decode: all of them mean "it will not
+    say", and none of them may cost the document.
+    """
+    try:
+        result = subprocess.run([binary], capture_output=True, text=True,
+                                errors="replace", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    banner = (result.stdout or "") + "\n" + (result.stderr or "")
+    for line in banner.splitlines()[:5]:
+        found = _SEVEN_ZIP_VERSION.search(line)
+        if found:
+            return found.group(1)
+    return None
 
 
 def extract_tar_7z(path: Path, dest: Path, *, report=None,
@@ -1117,7 +1182,7 @@ def extract_tar_7z(path: Path, dest: Path, *, report=None,
     dest.mkdir(parents=True, exist_ok=True)
     tmp_dir = Path(tempfile.mkdtemp(prefix="tar7z_"))
     try:
-        extract_with_7zip(path, tmp_dir, binary)
+        extract_with_7zip(path, tmp_dir, binary, report=report)
         # Sort on the POSIX relative path, the same idiom as guarantee 1 of the
         # determinism contract: without it, the `.tar` retained -- and therefore
         # THE WHOLE EXTRACTED CORPUS -- depended on the file system enumeration
@@ -1212,7 +1277,7 @@ def extract_archive(archive_path: Path, dest: Path, *, report=None,
                 f"extracted: no conclusion can be drawn from the absence of a finding "
                 f"on this archive."
             )
-        extract_with_7zip(archive_path, dest, binary)
+        extract_with_7zip(archive_path, dest, binary, report=report)
     else:
         # Last-resort fallback: historical zip/tar auto-detection when no
         # extension matched.

@@ -412,7 +412,7 @@ class TestPackagingBoundary(unittest.TestCase):
         # abbreviation of every option at once, a far larger break than the
         # two this costs. `--link`, `--linked` and `--linked-bom` are
         # unaffected.
-        self.assertEqual("2.2.0", unboxr.__version__)
+        self.assertEqual("3.0.0", unboxr.__version__)
         source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("importlib.metadata", source)
 
