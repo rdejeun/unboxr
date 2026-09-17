@@ -66,7 +66,6 @@ from .extraction import (
     PROVISIONAL_DIGEST_LENGTH,
     _digest_of_existing_file,
     is_url,
-    seven_zip_version,
 )
 from .report import (
     CAUSE_KINDS,
@@ -355,8 +354,10 @@ def _hashes(digest):
     name is `SHA-256`, spelled exactly as the `hash-alg` enumeration spells it.
 
     An absent digest leaves the field out because `hashes` has no way to say
-    "not computed" -- `unboxr:digestState` is what says it, and it is always
-    emitted.
+    "not computed". What says it, since 3.0, is the component's own anomaly --
+    or its type, for a path that is not file content. The invariant is written
+    where it is enforced, in `build_document`: a component carries a digest, or
+    a reason it has none.
     """
     if not digest:
         return None
@@ -366,17 +367,19 @@ def _hashes(digest):
 def _walk_the_tree(tree: Path, skip: set):
     """Every file left in the tree, with its digest -- or with why it has none.
 
-    ORDINARY FAILURES, NOT ANOMALIES. A broken symbolic link, a refused
-    permission, a file removed between the listing and the read: all three are
-    everyday events in a walk of a real tree, and none of them may fail the
-    document. Each is inscribed WITH ITS STATE NAMED, never omitted -- a file
-    quietly dropped is exactly the amputation this document exists to make
-    visible -- and their number is counted in `metadata`.
+    ORDINARY EVENTS, AND ANOMALIES ALL THE SAME. A broken symbolic link, a
+    refused permission, a file removed between the listing and the read: all
+    three are everyday in a walk of a real tree, and none of them may fail the
+    document. Since 3.0 each is inscribed with an ANOMALY CODE of its own --
+    they are literally `symlink_not_followed`, `read_failed` and
+    `not_regular_file` -- which is what makes them countable by a reader
+    filtering the components. Never omitted: a file quietly dropped is exactly
+    the amputation this document exists to make visible.
 
     SYMBOLIC LINKS ARE NOT FOLLOWED. `is_file()` follows them, so hashing one
     would duplicate the content of its target under a second path and invent an
-    alias the tree does not have. The link is inscribed with a state of its own
-    instead.
+    alias the tree does not have. The link is inscribed with an anomaly of its
+    own instead.
 
     DIRECTORIES ARE NOT INSCRIBED: this walk inventories files.
     """
@@ -494,12 +497,20 @@ def _seven_zip_tool(report):
     package cannot parse still gets its entry: dropping the tool over an
     unreadable banner would hide that 7-Zip ran at all, which is the part a
     reader needs.
+
+    NOTHING IS EXECUTED HERE, and that was not always true. This function used
+    to run the binary to read its version, which broke two promises at once:
+    the module docstring calls `build_document` silent by construction, and a
+    version read at DOCUMENT-BUILD time names whatever 7-Zip the machine
+    carries now rather than the one that did the work -- so the same report,
+    built either side of an upgrade, gave two different documents. Both facts
+    are now taken at the invocation and carried on the report.
     """
     binary = getattr(report, "seven_zip_used", None)
     if not binary:
         return None
     entry = {"type": TYPE_TOOL, "name": Path(binary).stem}
-    version = seven_zip_version(binary)
+    version = getattr(report, "seven_zip_version", None)
     if version:
         entry["version"] = version
     return entry
@@ -522,11 +533,17 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
     entirely, an empty array being a way of saying "we looked, there is none"
     that this package does not have.
 
-    ONE COMPONENT PER PATH, never one per report entry. The identity of a
-    report entry is the pair (cause, path) and one path can carry several
+    ONE COMPONENT PER (path, frame), never one per report entry. The identity
+    of a report entry is the pair (cause, path) and one path can carry several
     causes -- a container opened and then kept is the ordinary case. Every
     anomaly is present, in a deterministic order, and the texts follow the same
     order: none is chosen at the expense of another.
+
+    THE FRAME IS PART OF THE IDENTITY since 3.0.1, and the path alone is not.
+    A bare name and a tree-relative path can be the same string and name two
+    DIFFERENT files. Keying on the string merged them, which attributed one
+    file's anomaly to another; two components sharing a `name` and differing by
+    `bom-ref` is the correct reading, because they are two files.
 
     `source_kind` WAS REMOVED IN 3.0 and is no longer accepted. It fed two
     things that no longer exist: the `sourceKind` property, which said what
@@ -539,15 +556,32 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
     if linked_bom is not None and not is_bom_link_to_a_document(linked_bom):
         raise InvalidBomLinkError(INVALID_BOM_LINK_REASON % (linked_bom,))
 
+    # KEYED ON (path, frame), NEVER ON THE PATH ALONE, and this is not a
+    # refinement -- it is what makes the rule stated under `skip` below TRUE.
+    # That rule says a bare name cannot be confronted with a path in the tree
+    # because they name DIFFERENT files; sharing a dictionary key made the
+    # document do exactly the confrontation the rule forbids.
+    #
+    # MEASURED, not theorised: an archive `p.zip` holding an entry of its own
+    # name produces a level-0 `bare_name` record for the archive and a level-1
+    # `tree_relative` record for the entry. Merged on the string, the document
+    # attributed the entry's `extraction_failed` to the ARCHIVE -- claiming a
+    # container that had just been opened successfully could not be read -- and
+    # dropped the entry's component and digest.
+    #
+    # Two components may now carry the same `name`. That is correct: they are
+    # two files. Their `bom-ref` differ, and one component per (path, frame) is
+    # still one component per THING, which is what the rule always meant.
     entries = {}
     order = []
 
-    def _entry(path: str):
-        if path not in entries:
-            entries[path] = {"codes": [], "digest": None, "frame": None,
-                             "names_a_directory": False}
-            order.append(path)
-        return entries[path]
+    def _entry(path: str, frame):
+        key = (path, frame)
+        if key not in entries:
+            entries[key] = {"path": path, "codes": [], "digest": None,
+                            "frame": frame, "names_a_directory": False}
+            order.append(key)
+        return entries[key]
 
     # GENRE FIRST, THEN CAUSE RANK -- NEVER THE REPORT'S OWN FILL ORDER. The
     # genre a list belongs to is a structural property of the report, fixed
@@ -579,14 +613,13 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
 
     if tree is not None:
         for relative, digest, anomaly in _walk_the_tree(Path(tree), skip):
-            item = _entry(relative)
+            item = _entry(relative, PATH_IS_TREE_RELATIVE)
             item["digest"] = digest
-            item["frame"] = PATH_IS_TREE_RELATIVE
             if anomaly is not None:
                 item["codes"].append(anomaly)
 
     for record in records:
-        item = _entry(record.path)
+        item = _entry(record.path, record.path_frame)
         if record.code not in item["codes"]:
             item["codes"].append(record.code)
         # A digest already taken by the walk is the digest of the file that is
@@ -594,8 +627,6 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
         # path could not be confronted -- the collision case above.
         if item["digest"] is None and record.digest:
             item["digest"] = record.digest
-        if item["frame"] is None:
-            item["frame"] = record.path_frame
         # Only DESTINATION_ALREADY_OCCUPIED is measurably a directory: it is
         # the one report code no call site ever passes a digest for, BY
         # DESIGN, because its recorded path names the destination directory
@@ -634,28 +665,46 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
         item["codes"].append(READ_FAILED)
 
     # THE INPUT CONTAINER IS NOT LISTED TWICE. `metadata.component` already
-    # names it, with its digest; a second entry saying the same thing under a
-    # `bom-ref` was pure duplication once its `input_container_opened` property
-    # stopped being written.
+    # names it, so a second entry saying the same thing under a `bom-ref` was
+    # pure duplication once its `input_container_opened` property stopped being
+    # written.
     #
-    # BY IDENTITY OF THE PATH, NEVER BY RANK. The components are sorted, and
-    # the input container lands first only when its name happens to sort first
-    # -- `paquet.zip` before `paquet/...` because `.` precedes `/` in ASCII,
-    # which is a coincidence of that pair and not a rule. A collision is
-    # excluded by the naming rule itself: an archive is flattened into a
-    # directory carrying its own name, so nothing INSIDE the tree can have a
-    # relative path equal to the archive's own bare name.
-    subject_name = _bare_name(source)
+    # THE REPORT SAYS WHICH ENTRY IT IS. It is not inferred, and the three
+    # inferences that look obvious were each measured false -- see
+    # `ExtractionReport.input_container`, where the measurements are written
+    # down. Comparing the path to `_bare_name(source)`, which this function did
+    # until 3.0.1, silently dropped a component AND its digest whenever a
+    # directory source held a file of its own name (`LICENSE/LICENSE`), and
+    # attributed one entry's anomaly to another whenever an archive held a root
+    # entry of its own name.
+    #
+    # ABSORBING MEANS TAKING WHAT IT CARRIES, not just deleting it. The
+    # previous attempt hoisted the entry's CODES onto the subject and left its
+    # digest and its type behind: on the CLI's failure branch, where
+    # `source_digest` is None because `prepare_source` raised, that lost the
+    # digest of the received archive entirely -- from the one document whose
+    # whole purpose is to attest it, on the one run where it matters most.
+    input_key = getattr(report, "input_container", None)
+    absorbed = entries.get(input_key) if input_key is not None else None
+
     subject_codes = []
-    if source is not None and subject_name in entries:
-        subject_codes = [code for code in entries[subject_name]["codes"]
+    subject_digest = source_digest
+    # A file unless something says otherwise: a directory source absorbs
+    # nothing and has no digest, and falls through to `data` below.
+    subject_is_a_file = source_digest is not None
+    if absorbed is not None:
+        subject_codes = [code for code in absorbed["codes"]
                          if CAUSE_KINDS.get(code) != OPENED]
+        if subject_digest is None:
+            subject_digest = absorbed["digest"]
+        if not absorbed["names_a_directory"]:
+            subject_is_a_file = True
 
     components = []
-    listed = [path for path in sorted(order)
-              if not (source is not None and path == subject_name)]
-    for rank, path in enumerate(listed, start=1):
-        item = entries[path]
+    listed = [key for key in sorted(order) if key != input_key]
+    for rank, key in enumerate(listed, start=1):
+        item = entries[key]
+        path = item["path"]
         # OPENING A CONTAINER IS NOT AN ANOMALY, so its codes produce no
         # property -- but the COMPONENT stays, and with it the digest. A nested
         # archive is destroyed by the flattening: the instant it was recorded
@@ -701,8 +750,14 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
         components.append(component)
 
     subject = {
-        "type": TYPE_FILE if source_digest else TYPE_NOT_A_FILE,
-        "name": subject_name,
+        # COMPUTED ON WHAT IS KNOWN, not on whether a digest reached this
+        # function. Until 3.0.1 it read `if source_digest`, so an archive that
+        # was refused -- a real, regular file whose bytes were read and hashed
+        # -- came out typed `data`, "not file content". That was already
+        # imprecise; removing `unboxr:sourceKind` made it a contradiction,
+        # since `data` is now what says "the source was a directory".
+        "type": TYPE_FILE if subject_is_a_file else TYPE_NOT_A_FILE,
+        "name": _bare_name(source),
     }
     # THE SUBJECT CARRIES ITS OWN ANOMALIES, since it no longer appears among
     # the components. An input container that failed to open is the case this
@@ -710,7 +765,7 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
     subject_pairs = _anomaly_pairs(subject_codes)
     if subject_pairs:
         subject["properties"] = _properties(subject_pairs)
-    subject_hashes = _hashes(source_digest)
+    subject_hashes = _hashes(subject_digest)
     if subject_hashes is not None:
         subject["hashes"] = subject_hashes
 

@@ -263,7 +263,57 @@ from .sbom import (
 # `build_document` LOST A PARAMETER, `source_kind`, rather than keeping one
 # that no longer changes anything; `DIGEST_STATES` left `__all__` with the
 # states it named.
-__version__ = "3.0.0"
+# 3.1.0: what an adversarial review of 3.0.0 found, the same day. Three
+# layers in a fresh context, six findings reproduced before triage. A MINOR
+# version: `ExtractionReport` GAINS two fields and nothing is removed or
+# renamed -- but the bytes of some documents change, because some of them were
+# wrong.
+# THE ONE THAT MATTERED: 3.0.0 stopped listing the input container twice by
+# removing the entry whose path equalled the source's bare name. That removal
+# DESTROYED information instead of moving it, in three measured ways. A
+# directory source holding a file of its own name -- `LICENSE/LICENSE` -- lost
+# that file AND its digest, with no anomaly and no trace: the silent amputation
+# this whole package exists to make visible. An archive holding a root entry of
+# its own name had that entry's `extraction_failed` attributed to the ARCHIVE,
+# so the document claimed a container it had just opened successfully could not
+# be read. And on the command's failure branch, where `source_digest` is None
+# because `prepare_source` raised, the digest the report was holding never
+# reached the document at all -- on the one run the docstring calls the case
+# where the document matters most.
+# THE ROOT WAS DEEPER THAN THE REMOVAL. `entries` was keyed on the path STRING,
+# so a bare name and a tree-relative path -- two DIFFERENT files -- merged.
+# The rule forbidding exactly that confrontation was already written beside
+# `skip`; the key contradicted it. Components are now identified by
+# (path, frame), two may share a `name`, and the report SAYS which entry is the
+# input container instead of leaving it to be guessed: `input_container`. Each
+# of the three obvious inferences was measured false and the measurements are
+# written where the field is declared.
+# 7-ZIP, THREE DEFECTS IN ONE GESTURE. The binary was recorded BEFORE
+# `subprocess.run`, so one that vanished between the probe and the call was
+# named as a producer of a document it never touched. The version was the first
+# dotted number of the first five lines, so a loader warning put `6.0` in the
+# document as a 7-Zip version, `9.20.1` was truncated to `9.20`, and a banner
+# on stderr was read one line short. And `build_document` -- documented as
+# silent by construction -- ran the binary itself, at DOCUMENT-BUILD time, so
+# the same report built either side of an upgrade gave two documents. Both
+# facts are now taken at the invocation, after it has started, and carried on
+# the report; nothing is executed when the document is built.
+# FOUR PUBLISHED STATEMENTS WERE FALSE and are corrected: both README code
+# examples passed `source_kind`, removed at 3.0.0, so reading the README and
+# typing what it said raised `TypeError`; the "not a fifth guarantee"
+# paragraph still described a capability profile the document no longer
+# carries; guarantee 4 had never been widened from amputations to anomalies in
+# either text, leaving a cross-reference pointing at a promise nobody made; and
+# the three codes that replaced the digest states were in no published table.
+# A test now checks the README's calls against the real signature -- the
+# ratchet compared property NAMES and never looked at the code blocks.
+# Also: `summarise` omits no kind any more (`not_attested` was missing on the
+# day it arrived -- the same defect this function was corrected for once
+# before, on `widened`); the "one table" guard covers `sbom.py`; four live and
+# false prose passages in `sbom.py` are rewritten; and the test that carries
+# the invariant's name now exercises it -- it used `chmod(0o444)`, which is
+# read-only and not unreadable, so it could not fail.
+__version__ = "3.1.0"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
@@ -284,7 +334,6 @@ __all__ = [
     "UnsupportedFormatError",
     # The document: the corpus as a record that outlives the run
     "sbom",
-
     "PROPERTY_NAMES",
     "build_document",
     "serialise",

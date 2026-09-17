@@ -200,6 +200,17 @@ logging.basicConfig(level=logging.INFO)
 | `zstd_not_supported` | a Zstandard container was recognised and refused |
 | `seven_zip_binary_missing` | a container needs a 7-Zip binary this machine has not got |
 
+Three more codes name a path that is **present and not attested**. They are not
+amputations -- nothing was lost, the attestation was never possible -- so they
+sit in `report.not_attested`, and they appear in the extraction document like
+any other anomaly:
+
+| Code | What happened |
+|---|---|
+| `read_failed` | a file was listed but its bytes could not be read, so it carries no digest |
+| `not_regular_file` | a path was listed that is not a regular file and has no content to digest |
+| `symlink_not_followed` | a symbolic link was listed and deliberately not followed |
+
 Translate the **code**, not the text: the text is derived from the code by one
 table inside `unboxr`, so it can be reworded and the code cannot. A code your
 version does not know is a code from a later one -- keep it distinct from
@@ -235,6 +246,11 @@ It holds one component per path:
 - every container that was **not opened**, with its cause -- code and English
   text, as two separate properties.
 
+The container you handed over is the exception, and it moved at 3.0: it is
+`metadata.component`, the subject of the document, and it is **not** repeated
+among the components. Its digest and its anomaly, if it has one, are on the
+subject. Look for the input there, never in `components`.
+
 It attests the presence and the digest of what it lists. It renders no verdict
 of any kind.
 
@@ -265,8 +281,7 @@ The library form returns a structure and writes nothing:
 ```python
 document = unboxr.build_document(prepared.report, prepared.tree,
                                  source="pkg-1.2.3.tar.gz",
-                                 source_digest=prepared.digest,
-                                 source_kind="archive")
+                                 source_digest=prepared.digest)
 unboxr.write_document(document, Path("sbom.json"))
 ```
 
@@ -385,7 +400,6 @@ From the library, the same link is a keyword argument of `build_document`:
 document = unboxr.build_document(prepared.report, prepared.tree,
                                  source="pkg-1.2.3.tar.gz",
                                  source_digest=prepared.digest,
-                                 source_kind="archive",
                                  linked_bom="urn:cdx:3e671687-395b-41f5-a30f-a58921a69b79/1")
 ```
 
@@ -556,15 +570,35 @@ strictly local. There is no telemetry, no update check, and no index lookup.
    a stable cause **code**; its English text is derived from that code by one
    table, in `unboxr.report`, and never written a second time.
 
+   **Since 3.0 this covers every ANOMALY, not only amputations.** A destination
+   that already held content, an archive kept because it could not be removed,
+   a container recognised by its bytes when its extension said nothing, a
+   listed path whose digest could not be taken: none of those costs content,
+   and all of them are declared, because a corpus that changes shape without a
+   trace is no better than one that shrinks without a trace. The bound is what
+   can be observed at a boundary this package crosses -- see "The extraction
+   document", which names the three things that fall outside it.
+
 ### The extraction document is not a fifth guarantee
 
 `unboxr --sbom` produces the same bytes for the same tree, the serial number
-and the timestamp aside -- which the document names itself, in a field of its
-own. That is an **observation**, and it is deliberately not a fifth guarantee:
-the document carries what *this* machine can open, so one archive yields two
-different documents on two machines whose 7-Zip availability differs.
+and the timestamp aside -- both of which CycloneDX itself defines as belonging
+to the moment a document is made, so neither is this package's to promise. That
+is an **observation**, and it is deliberately not a fifth guarantee.
+
+The document names the 7-Zip binary that actually ran, and the version it
+announced. Two machines therefore produce two different documents whenever
+7-Zip took part at all and they do not carry the same one -- a different
+version is enough, and so is one machine having it where the other has not.
 Promising byte-identity would make this contract false the first time that
 happened. Compare two documents on one machine, under one version of `unboxr`.
+
+**This is not narrower than it was, and it is not wider: it is elsewhere.**
+Before 3.0 the document wrote the machine's whole capability profile, so two
+machines that both had 7-Zip agreed whatever their versions, and two machines
+that differed disagreed even on an archive 7-Zip never touched. Now they agree
+on every run 7-Zip stayed out of, and disagree on the version whenever it took
+part. Which is the smaller divergence depends on what you extract.
 
 ### What the contract does not guarantee
 
@@ -583,8 +617,9 @@ happened. Compare two documents on one machine, under one version of `unboxr`.
   about what any of it *means*, and *an absent entry establishes nothing* --
   the oracle is positive only **on the corpus**: an absent entry establishes
   nothing about what was inside a container nobody opened. It is NOT positive
-  only on the anomalies, where guarantee 4 above promises the reverse, within
-  the bound named under "The extraction document".
+  only on the anomalies, where guarantee 4 above now promises the reverse --
+  every anomaly this package can observe is declared -- within the bound named
+  under "The extraction document".
 - **No guarantee that the provisional extraction name stays provisional.** It is
   normally transitory -- the directory is renamed as soon as the archive is gone
   -- but it becomes the *definitive* name of that directory whenever the rename

@@ -441,9 +441,15 @@ class TestTheWrittenContract(unittest.TestCase):
         self.assertEqual(len(in_code), len(sbom_module.PROPERTY_NAMES))
 
     def test_adding_a_property_is_declared_to_raise_the_minor_version(self):
-        """Every property of this document is emitted systematically, so adding
-        one is an addition to the published contract and every consumer sees
-        it. The rule is written ONCE, where the table itself lives."""
+        """Adding a property to this document is an addition to the published
+        contract, and the rule is written ONCE, where the table itself lives.
+
+        THE PREMISE OF THIS DOCSTRING CHANGED AT 3.0 and the assertion did not.
+        It used to read "every property is emitted systematically, so every
+        consumer sees a new one" -- true when a property appeared on every
+        component, false now that one is written only when something abnormal
+        happened. What it holds is unaffected: a name added to the table is a
+        name added to the contract."""
         self.assertIn("adding a property to the document is an addition to the "
                       "contract", self.readme.lower())
 

@@ -774,6 +774,15 @@ def summarise(report, logger: logging.Logger) -> None:
     for entry in report.widened:
         logger.info("Recognised by content -- %s: %s", entry.path,
                     text_for(entry.code))
+    # `report.not_attested` is the fifth kind, added at 3.0. It was missing
+    # here on the day it arrived -- the SAME defect this function was already
+    # corrected for once, on `widened`, in story 14.3. A path whose content is
+    # not attested appeared in the extraction document and nowhere at all on
+    # the console, so a caller who reads the run rather than the document never
+    # heard of it.
+    for entry in report.not_attested:
+        logger.info("Not attested -- %s: %s", entry.path,
+                    text_for(entry.code))
 
 
 def main(argv: list[str] | None = None) -> int:

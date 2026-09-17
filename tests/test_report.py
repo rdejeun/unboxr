@@ -105,7 +105,11 @@ class TestTheVocabularyOfCauses(unittest.TestCase):
         """One table, inside unboxr, or the texts diverge by construction.
         Checked on the SOURCE of the other two modules: a copy made to spare an
         import is exactly the failure this forbids."""
-        for name in ("cli.py", "extraction.py"):
+        # `sbom.py` JOINED THE LIST AT 3.0: it is the module that projects the
+        # codes onto a document, so it is the likeliest place for a second
+        # table of texts to appear -- and the story that merged the digest
+        # states into this vocabulary asked for the guard explicitly.
+        for name in ("cli.py", "extraction.py", "sbom.py"):
             source = (PACKAGE_ROOT / name).read_text(encoding="utf-8")
             for code, text in report.CAUSE_TEXTS.items():
                 with self.subTest(module=name, code=code):

@@ -75,6 +75,14 @@ the consumer.
    a stable cause CODE; its English text is derived from that code by one
    table, in `unboxr.report`, and never written a second time.
 
+   SINCE 3.0 THIS COVERS EVERY ANOMALY, not only amputations: a destination
+   that already held content, an archive kept because it could not be removed,
+   a container recognised by its bytes, a listed path whose digest could not be
+   taken. None of those costs content and all are declared, because a corpus
+   that changes shape without a trace is no better than one that shrinks
+   without a trace. The bound is what can be observed at a boundary this
+   package crosses -- the README names the three things outside it.
+
 THE EXTRACTION DOCUMENT IS NOT A FIFTH GUARANTEE
 -----------------------------------------------
 `unboxr.sbom` produces the same bytes for the same tree, the serial number and
@@ -82,14 +90,20 @@ the timestamp aside -- both of which CycloneDX itself defines as belonging to
 the moment a document is made, so neither is this package's to promise. That is
 an OBSERVATION, and it is deliberately NOT added to the four guarantees above.
 
-The document names the 7-Zip binary it actually ran, so two machines that
-differ in 7-Zip availability still produce two different documents whenever
-that difference CHANGED the outcome -- fewer containers opened, a tool entry
-present or absent -- legitimately and by design; promising byte-identity would
-make this contract false the first time that happened. The divergence is
-narrower than it was, when the document wrote the machine's whole capability
-profile whether it had mattered or not, but narrower is not none. Comparing two
-documents is something to do on one machine, under one version of this package.
+The document names the 7-Zip binary that actually ran, and the version it
+announced, so two machines produce two different documents whenever 7-Zip took
+part at all and they do not carry the same one -- a different version is
+enough. Promising byte-identity would make this contract false the first time
+that happened. Comparing two documents is something to do on one machine, under
+one version of this package.
+
+NOT NARROWER THAN IT WAS -- ELSEWHERE, and the first draft of this paragraph
+claimed "narrower" without measuring it. Before 3.0 the whole capability
+profile was written, so two machines that both had 7-Zip agreed whatever their
+versions, and two that differed disagreed even on an archive 7-Zip never
+touched. Now they agree on every run it stayed out of, and disagree on the
+version whenever it took part. Which divergence is smaller depends on the
+corpus, so neither word is owed.
 
 Saying so is not pedantry: a reader who observed the stability and found the
 contract silent would conclude a promise that is not there.
@@ -1114,30 +1128,55 @@ def extract_with_7zip(archive_path: Path, dest: Path, binary: str,
     machine could have used would describe its environment instead of its own
     provenance.
 
-    RECORDED BEFORE THE RETURN CODE IS READ, deliberately: a 7-Zip that ran and
-    failed still shaped this corpus -- the archive is not extracted and an
-    amputation is filed -- so it belongs in the document either way. The first
-    invocation wins; a second run of the same binary is not a second tool.
+    RECORDED AFTER THE PROCESS HAS RUN, AND BEFORE ITS RETURN CODE IS READ.
+    Both halves matter and they were wrong in opposite directions at first.
+
+    After it has RUN: `subprocess.run` can raise before anything starts -- the
+    binary gone between the probe and the call, a permission withdrawn, a
+    network share dropped. Recording first named a tool that never executed a
+    byte as a producer of this document, which is a false provenance in a piece
+    of evidence. Nothing is recorded on that path now: the exception carries
+    the failure.
+
+    Before its RETURN CODE is read: a 7-Zip that ran and failed still shaped
+    this corpus -- the archive is not extracted and an amputation is filed --
+    so it belongs in the document either way.
+
+    The first invocation wins; a second run of the same binary is not a second
+    tool, and the version is read once with it.
     """
     dest.mkdir(parents=True, exist_ok=True)
-    if report is not None and getattr(report, "seven_zip_used", None) is None:
-        report.seven_zip_used = binary
     result = subprocess.run(
         [binary, "x", "-y", f"-o{dest}", str(archive_path)],
         capture_output=True, text=True, timeout=600,
+        stdin=subprocess.DEVNULL,
     )
+    if report is not None and getattr(report, "seven_zip_used", None) is None:
+        report.seven_zip_used = binary
+        report.seven_zip_version = seven_zip_version(binary)
     if result.returncode != 0:
         raise RuntimeError(
             f"Extraction through {binary} failed: {result.stderr.strip()[:400] or result.stdout.strip()[:400]}"
         )
 
 
-# The shape a 7-Zip banner states its version in. ONE dotted number, taken from
-# the first lines of the banner: `7-Zip 23.01 (x64)`, `7-Zip (z) 21.07 (x64)`,
-# `7-Zip [64] 16.02` and `p7zip Version 16.02` all yield theirs. Transcribed
-# from the banners themselves rather than from documentation, which none of
-# these forks publishes in a comparable way.
-_SEVEN_ZIP_VERSION = re.compile(r"\b(\d+\.\d+)\b")
+# The shape a 7-Zip banner states its version in: a dotted number of TWO OR
+# MORE components -- `7-Zip 23.01 (x64)`, `7-Zip (z) 21.07 (x64)`,
+# `7-Zip [64] 16.02`, `p7zip Version 16.02`, and `9.20.1` where a fork uses
+# three. Transcribed from the banners themselves rather than from
+# documentation, which none of these forks publishes in a comparable way.
+#
+# TWO OR MORE, not exactly two: `\d+\.\d+` matched `9.20` inside `9.20.1` and
+# wrote a truncated version as though it were the whole one.
+_SEVEN_ZIP_VERSION = re.compile(r"\b(\d+(?:\.\d+)+)\b")
+
+# The line has to NAME the product before a number on it is believed. Without
+# this, the first dotted number of the first five lines won -- so a dynamic
+# loader warning (`libstdc++.so.6.0.25 not found`) or a wrapper preamble
+# (`Java HotSpot 1.8`) put `6.0` or `1.8` in the document as a 7-Zip version.
+# A fabricated fact is worse than a missing one here: `version` is optional,
+# and the tool entry is written without it when nothing can be read.
+_SEVEN_ZIP_BANNER = re.compile(r"7-?zip", re.IGNORECASE)
 
 
 def seven_zip_version(binary: str) -> str | None:
@@ -1157,14 +1196,22 @@ def seven_zip_version(binary: str) -> str | None:
     """
     try:
         result = subprocess.run([binary], capture_output=True, text=True,
-                                errors="replace", timeout=30)
+                                errors="replace", timeout=30,
+                                stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
-    banner = (result.stdout or "") + "\n" + (result.stderr or "")
-    for line in banner.splitlines()[:5]:
-        found = _SEVEN_ZIP_VERSION.search(line)
-        if found:
-            return found.group(1)
+    # THE TWO STREAMS ARE READ SEPARATELY, five lines each. Concatenating them
+    # with a newline put an empty line first whenever stdout was empty, so a
+    # banner printed on stderr was examined four lines deep instead of five --
+    # and a version on the fifth was lost, producing a tool entry without a
+    # version that reads exactly like an unreadable banner.
+    for stream in (result.stdout, result.stderr):
+        for line in (stream or "").splitlines()[:5]:
+            if not _SEVEN_ZIP_BANNER.search(line):
+                continue
+            found = _SEVEN_ZIP_VERSION.search(line)
+            if found:
+                return found.group(1)
     return None
 
 
@@ -2279,6 +2326,16 @@ def prepare_source(source: str, workspace: Path | None = None,
     # the flattening below: what is attested is the input as it was GIVEN.
     digest_hex = _sha256_digest_of_file(local_path)
     logger.info("SHA-256 digest of the input: sha256:%s", digest_hex)
+
+    # THE SAME SINGLE POINT NAMES THE INPUT CONTAINER. Both origins have
+    # converged here -- a local archive, or the file `download_source` has just
+    # written -- and `local_path` still designates the whole archive. Spelled
+    # through the one predicate that decides what a record's path looks like,
+    # so the name matches the entry it will have to be matched against; a
+    # second spelling written elsewhere is the duplicated predicate this
+    # project has already been told off for once.
+    if report is not None:
+        report.input_container = _reportable_path_and_frame(local_path)
 
     target = resolve_extraction_root(source, workspace, replace=replace,
                                      no_archive_dir=no_archive_dir)

@@ -563,6 +563,36 @@ class ExtractionReport:
     # second invocation of the same binary is not a second tool.
     seven_zip_used: str | None = None
 
+    # The version that binary announced, or None when it would not say. TAKEN
+    # AT THE INVOCATION, never later: a document built after the machine's
+    # 7-Zip was upgraded would otherwise name a version that did not do the
+    # work. It is a fact about the RUN, which is why it lives on the report
+    # beside the binary rather than being probed when the document is built.
+    seven_zip_version: str | None = None
+
+    # The path of the container the CALLER handed over, spelled exactly as a
+    # record carries it, or None when the source was a directory (there is no
+    # container then) or nothing ran.
+    #
+    # SAID, NOT GUESSED, and that is the whole reason this field exists. A
+    # consumer -- `unboxr.sbom` -- needs to know which entry is the input in
+    # order to stop listing it twice. Every way of INFERRING it was measured
+    # and found false: comparing the path to the source's bare name breaks on a
+    # directory source holding a file of its own name, and on an archive
+    # holding a root entry of its own name; `level == 0` is shared with
+    # `DESTINATION_ALREADY_OCCUPIED`, which names a directory somewhere else;
+    # and the set of codes filed on the input is not enumerable, the failure
+    # branch writing whatever code an `UnsupportedFormatError` carries.
+    #
+    # Each of those inferences dropped a component AND its digest in silence,
+    # which is the one failure this document exists to prevent.
+    #
+    # THE PAIR, NOT THE PATH ALONE. A bare name and a tree-relative path can be
+    # the same string and name two DIFFERENT files -- an archive `p.zip` whose
+    # own content includes an entry called `p.zip` is the ordinary way to get
+    # there. The frame is what tells them apart, so it travels with the path.
+    input_container: tuple | None = None
+
     _KIND_FIELDS = {
         OPENED: "opened",
         NOT_OPENED: "not_opened",
