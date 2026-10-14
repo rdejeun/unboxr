@@ -12,7 +12,7 @@ CORPUS the oracle is positive only: the document says NOTHING about what was
 inside a container nobody opened. It renders no verdict of any kind, and none
 may be read into it.
 
-ON THE ANOMALIES IT PROMISES THE OPPOSITE, and that is what 3.0 changed. Every
+ON THE ANOMALIES IT PROMISES THE OPPOSITE. Every
 abnormal event this package can observe is written here, so a component with no
 properties is not a silence -- it says nothing abnormal happened to that path.
 The promise is bounded by what is observable at a boundary this package
@@ -45,10 +45,9 @@ construction rather than by discipline.
 NO EXCLUSION POLICY. `unboxr` has none -- not `__pycache__`, not `.git`, not
 `node_modules`. Whether those belong in an analysed corpus is the consumer's
 policy, applied after extraction, and introducing it here would make this
-document depend on a decision that is not this package's to take. Until 3.0 the
-document repeated that in a property of its own, on every document, always with
-the same value: a constant says nothing per document, and it belongs in the
-README, where it now lives alone.
+document depend on a decision that is not this package's to take. The document
+carries no property for it: a constant says nothing per document, and it
+belongs in the README, where it lives alone.
 """
 
 from __future__ import annotations
@@ -79,12 +78,12 @@ from .report import (
 )
 
 # The canonical rank of a cause code, read from `CAUSE_TEXTS`'s own
-# declaration order -- the one table the crypto-scan story (AC-3.2) already
-# treats as where a code's identity lives. Used below to order multiple
+# declaration order -- the one table already treated
+# as where a code's identity lives. Used below to order multiple
 # causes on one path WITHOUT relying on the report's internal list fill
 # order: no test holds that order today, and leaning on it would be leaning
-# on a property this package does not guarantee. Decided by Rodolphe in code
-# review, story 14.4: the genre a code belongs to (opened, not_opened,
+# on a property this package does not guarantee. Decided in code
+# review: the genre a code belongs to (opened, not_opened,
 # still_in_tree, widened) already fixes the coarse order; this fixes the rest.
 _CAUSE_RANK = {code: rank for rank, code in enumerate(CAUSE_TEXTS)}
 
@@ -105,14 +104,12 @@ _CAUSE_RANK = {code: rank for rank, code in enumerate(CAUSE_TEXTS)}
 # text are two properties, so that a consumer reads one and displays the other
 # instead of splitting a string on punctuation.
 #
-# A PROPERTY IS WRITTEN ONLY WHEN SOMETHING ABNORMAL HAPPENED, and this is the
-# rule that reversed in 3.0. Until then every property was emitted on every
-# component, `unboxr:causeCode = no_entry` included, because an omission would
-# have read as "not applicable" rather than "not determined" -- true under a
-# positive-only oracle, where a silence cannot be told apart from an unasked
+# A PROPERTY IS WRITTEN ONLY WHEN SOMETHING ABNORMAL HAPPENED. Under a
+# positive-only oracle an omission would read as "not applicable" rather than
+# "not determined", because a silence cannot be told apart from an unasked
 # question.
 #
-# The document now promises the opposite on anomalies: every abnormal event
+# The document promises the opposite on anomalies: every abnormal event
 # this package can observe is written. An omission therefore ASSERTS something
 # precise -- "nothing abnormal happened to this path" -- and repeating that
 # seven hundred times over an ordinary archive adds nothing. The two halves are
@@ -121,12 +118,11 @@ _CAUSE_RANK = {code: rank for rank, code in enumerate(CAUSE_TEXTS)}
 #
 # The table is published in README.md and a test compares the two IN BOTH
 # DIRECTIONS. Adding a name here is an addition to the published contract and
-# raises the minor version; REMOVING one, as 3.0 did to fourteen of them,
-# raises the major.
+# raises the minor version; REMOVING one raises the major.
 PROPERTY_PREFIX = "unboxr:"
 
 # On `metadata.properties`: the one thing true of the RUN that nothing else
-# says. It survived the cull of 3.0 alone, and not for convenience -- it is the
+# says. It is the only property of the run, and not for convenience -- it is the
 # flag that says the exhaustivity promise DOES NOT HOLD for this document. A
 # run that died partway could not observe the anomalies it never reached, and
 # without this a truncated document would be indistinguishable from a clean
@@ -138,10 +134,9 @@ EXTRACTION_OUTCOME = "unboxr:extractionOutcome"
 ANOMALY_CODE = "unboxr:anomalyCode"
 ANOMALY_TEXT = "unboxr:anomalyText"
 
-# The one survivor of the four per-component properties 3.0 removed, and it
-# survives in a single case. The other three -- `digestState`, `nestingLevel`,
-# `parentContainer` when it names a real parent -- are all derivable from the
-# path and the anomalies, because a nested archive is flattened into a
+# The one per-component property about ancestry, and it is written in a single
+# case. A real parent, the nesting level and the digest state are all derivable
+# from the path and the anomalies, so none is a property, because a nested archive is flattened into a
 # directory carrying its own name: `outer.zip/inner.zip/code/aes.c` states its
 # own ancestry, and the containers it names are themselves components.
 #
@@ -325,7 +320,7 @@ def _bare_name(text) -> str:
     query string can carry a bearer credential (`?X-Amz-Signature=...`), which
     has no business in a document meant to be kept and shared, and it changes
     on every fetch of the same artefact -- silently breaking determinism on a
-    field this document does not declare volatile (review of story 14.4).
+    field this document does not declare volatile (code review).
     """
     if text is None:
         return UNKNOWN
@@ -354,7 +349,7 @@ def _hashes(digest):
     name is `SHA-256`, spelled exactly as the `hash-alg` enumeration spells it.
 
     An absent digest leaves the field out because `hashes` has no way to say
-    "not computed". What says it, since 3.0, is the component's own anomaly --
+    "not computed". What says it is the component's own anomaly --
     or its type, for a path that is not file content. The invariant is written
     where it is enforced, in `build_document`: a component carries a digest, or
     a reason it has none.
@@ -370,7 +365,7 @@ def _walk_the_tree(tree: Path, skip: set):
     ORDINARY EVENTS, AND ANOMALIES ALL THE SAME. A broken symbolic link, a
     refused permission, a file removed between the listing and the read: all
     three are everyday in a walk of a real tree, and none of them may fail the
-    document. Since 3.0 each is inscribed with an ANOMALY CODE of its own --
+    document. Each is inscribed with an ANOMALY CODE of its own --
     they are literally `symlink_not_followed`, `read_failed` and
     `not_regular_file` -- which is what makes them countable by a reader
     filtering the components. Never omitted: a file quietly dropped is exactly
@@ -384,9 +379,8 @@ def _walk_the_tree(tree: Path, skip: set):
     DIRECTORIES ARE NOT INSCRIBED: this walk inventories files.
     """
     found = []
-    # THE THIRD ELEMENT IS AN ANOMALY CODE OR `None`, where it used to be one of
-    # four digest states. The fourth state said "the digest was computed", which
-    # 3.0 has nothing to write about: it is the ordinary case.
+    # THE THIRD ELEMENT IS AN ANOMALY CODE OR `None`. "The digest was computed"
+    # is the ordinary case and has nothing to write about.
     #
     # CHECKED, NOT LEFT TO `rglob` TO RAISE. A missing root used to be caught
     # by an `OSError` from `rglob` itself on older Python -- current pathlib
@@ -424,7 +418,7 @@ def _walk_the_tree(tree: Path, skip: set):
                 # these here, as the walk used to, would contradict that and
                 # drop them with no trace at all. `not_a_file` is the state
                 # already used for "this path exists but is not file content
-                # to hash". Reviewed in story 14.4.
+                # to hash". Reviewed in code review.
                 found.append((relative, None, NOT_REGULAR_FILE))
                 continue
         except OSError:
@@ -469,7 +463,7 @@ def _anomaly_pairs(codes):
     boundary translates the CODE and ignores the text, so mixing a machine
     value and prose into one string would force it to split on punctuation.
 
-    AN EMPTY LIST IS THE ORDINARY CASE since 3.0, and it is what makes the
+    AN EMPTY LIST IS THE ORDINARY CASE, and it is what makes the
     caller leave `properties` out. There is no `no_entry` any more: the absence
     of the key is the statement.
     """
@@ -539,16 +533,11 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
     anomaly is present, in a deterministic order, and the texts follow the same
     order: none is chosen at the expense of another.
 
-    THE FRAME IS PART OF THE IDENTITY since 3.0.1, and the path alone is not.
+    THE FRAME IS PART OF THE IDENTITY, and the path alone is not.
     A bare name and a tree-relative path can be the same string and name two
     DIFFERENT files. Keying on the string merged them, which attributed one
     file's anomaly to another; two components sharing a `name` and differing by
     `bom-ref` is the correct reading, because they are two files.
-
-    `source_kind` WAS REMOVED IN 3.0 and is no longer accepted. It fed two
-    things that no longer exist: the `sourceKind` property, which said what
-    `metadata.component.type` already says, and the two depth properties. A
-    parameter that no longer changes anything is worse than an absent one.
     """
     # BEFORE ANYTHING IS BUILT. A document half-assembled and then thrown away
     # costs a full walk of the tree for nothing, and the fault is decidable
@@ -672,8 +661,8 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
     # THE REPORT SAYS WHICH ENTRY IT IS. It is not inferred, and the three
     # inferences that look obvious were each measured false -- see
     # `ExtractionReport.input_container`, where the measurements are written
-    # down. Comparing the path to `_bare_name(source)`, which this function did
-    # until 3.0.1, silently dropped a component AND its digest whenever a
+    # down. Comparing the path to `_bare_name(source)`, which would
+    # silently drop a component AND its digest whenever a
     # directory source held a file of its own name (`LICENSE/LICENSE`), and
     # attributed one entry's anomaly to another whenever an archive held a root
     # entry of its own name.
@@ -751,11 +740,10 @@ def build_document(report, tree=None, *, source=None, source_digest=None,
 
     subject = {
         # COMPUTED ON WHAT IS KNOWN, not on whether a digest reached this
-        # function. Until 3.0.1 it read `if source_digest`, so an archive that
+        # function. Testing `if source_digest` would type an archive that
         # was refused -- a real, regular file whose bytes were read and hashed
-        # -- came out typed `data`, "not file content". That was already
-        # imprecise; removing `unboxr:sourceKind` made it a contradiction,
-        # since `data` is now what says "the source was a directory".
+        # -- as `data`, "not file content", which is false: `data` is what
+        # says "the source was a directory".
         "type": TYPE_FILE if subject_is_a_file else TYPE_NOT_A_FILE,
         "name": _bare_name(source),
     }
@@ -864,7 +852,7 @@ SCHEMA_KEY_ORDER_SOURCE = (
 # `version` SITS IN THE COMPONENT TABLE and not only in the root one: the tool
 # inside `metadata.tools.components` is a component carrying `type`, `name` and
 # `version`, and without the entry here nothing would hold `version` after
-# `name`. Measured during implementation; the story's table omitted it.
+# `name`. Measured during implementation; the original table omitted it.
 SCHEMA_KEY_ORDER = {
     "bom": ("bomFormat", "specVersion", "serialNumber", "version", "metadata",
             "components", "externalReferences"),
@@ -1006,7 +994,7 @@ def _in_key_order(value, _enclosing=()):
 
     DEPTH CEILING, AND IT IS LOWER THAN IT WAS. This pass spends a Python
     frame per level before the C encoder runs, so the deepest document
-    `serialise` accepts is roughly a THIRD of what 2.0.1 accepted -- about
+    `serialise` accepts is roughly a THIRD of what a plain recursive encoder accepts -- about
     994 levels against 2998 at the default recursion limit. No extraction
     document comes close: a file tree is wide, not deep. It is written down
     rather than fixed because an iterative rewrite would cost the legibility

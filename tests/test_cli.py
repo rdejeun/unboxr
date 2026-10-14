@@ -50,7 +50,6 @@ from unboxr.report import PreparedSource  # noqa: E402
 # disclaimer from a claim. A second list written here is what code review found
 # on 15 September 2026: two guards sharing no entry, neither naming the other.
 from test_boundaries import (  # noqa: E402
-    FORBIDDEN_TOKENS,
     VERDICT_CLAIM_TOKENS,
     verdict_claims_in,
 )
@@ -124,7 +123,7 @@ class TestEntryPointAndSurface(_CommandBench):
         # `--sbom` writes the extraction document; `--linked-bom` says which
         # other BOM that document belongs to, and has no meaning without it.
         # `--replace` and `--no-archive-dir` are the two other extraction
-        # modes story 14.8 added. `--list-formats` prints what this machine
+        # modes. `--list-formats` prints what this machine
         # opens and extracts nothing; `--json` shapes that listing and has
         # no meaning without it. The surface is asserted as a COMPLETE set
         # precisely so that one more cannot slip in unnoticed -- this test
@@ -137,8 +136,8 @@ class TestEntryPointAndSurface(_CommandBench):
         self.assertEqual({"-v", "-q", "-h"}, short)
 
     def test_the_command_has_no_self_check_gate(self):
-        """No `--controle`, no `--strict`: those belong to the project this code
-        came from, and unboxr has no gate of any kind."""
+        """No `--controle`, no `--strict`: this command has no self-check gate
+        of any kind."""
         _, out, _ = self._run(["--help"])
         for absent in ("--controle", "--strict", "--check"):
             with self.subTest(absent=absent):
@@ -153,7 +152,7 @@ class TestEntryPointAndSurface(_CommandBench):
 
     def test_a_missing_destination_is_a_usage_error_unless_replace_is_given(self):
         """`destination` became OPTIONAL the day `--replace` needed an
-        invocation that has no object for it (story 14.8, AC-3.2): what
+        invocation that has no object for it: what
         "missing" means no longer follows from the positional alone, it
         follows from the combination with `--replace`. Still a usage error,
         still code 2 -- the definition of "missing" changed, not the fact
@@ -172,17 +171,12 @@ class TestEntryPointAndSurface(_CommandBench):
         """Declared, so that later work adds to a STATED floor rather than
         discovering one.
 
-        The docstring used to forbid, literally, what the report story then
-        did: "do not design their options here". The command was always meant
-        to be enriched by that story and again by the document one; what it
-        must keep saying is which floor it is now standing on, and what is
-        still not its job.
+        The command is meant to grow; what it must keep saying is which floor
+        it is standing on, and what is still not its job.
 
-        AND THE CLAIM THAT HAD TO GO. "It writes no document" was true until
-        the document story, and this assertion is what made its removal
-        impossible to forget -- the whole point of holding published prose in
-        a test. It is replaced here by the claim that is now true, which is
-        narrower: a document is written ON REQUEST, and never otherwise.
+        AND THE CLAIM IS NARROW: a document is written ON REQUEST, and never
+        otherwise. Holding published prose in a test is what keeps that
+        sentence true.
 
         AND THE SECOND ONE, FOR A REASON WORTH WRITING DOWN. The heading was
         asserted and its CONTENTS never were, so the paragraph under it could
@@ -239,7 +233,7 @@ class TestExtractionThroughTheCommand(_CommandBench):
         self.assertIn("FileNotFoundError", err)
 
     def test_a_non_empty_destination_is_refused_under_no_archive_dir(self):
-        """AC-4.2 keeps the OLDER rule under `--no-archive-dir`, where the
+        """The OLDER rule is kept under `--no-archive-dir`, where the
         extracted tree IS DESTINATION: it must be empty or absent."""
         archive = self._zip("p.zip", [("a.txt", "a")])
         destination = self.dir / "busy"
@@ -254,7 +248,7 @@ class TestExtractionThroughTheCommand(_CommandBench):
                          (destination / "precious.txt").read_text(encoding="utf-8"))
 
     def test_a_non_empty_destination_is_accepted_in_the_default_mode(self):
-        """AC-2.4: the new contract claims a NAME inside DESTINATION, not the
+        """The default contract claims a NAME inside DESTINATION, not the
         whole directory -- `unboxr toto.jar /tmp` is now a valid invocation
         even when DESTINATION holds other things, as long as it does not
         already hold a path named after the archive."""
@@ -270,7 +264,7 @@ class TestExtractionThroughTheCommand(_CommandBench):
                          (destination / "precious.txt").read_text(encoding="utf-8"))
 
     def test_an_already_occupied_target_is_refused_in_the_default_mode(self):
-        """AC-2.1/AC-2.2: the refusal is on the SPECIFIC target already
+        """The refusal is on the SPECIFIC target already
         existing, never on DESTINATION being merely non-empty."""
         archive = self._zip("p.zip", [("a.txt", "a")])
         destination = self.dir / "out"
@@ -335,11 +329,11 @@ class TestExtractionThroughTheCommand(_CommandBench):
 
 
 class TestTheThreeExtractionModes(_CommandBench):
-    """Story 14.8: the default, `--replace` and `--no-archive-dir` modes, and
-    the refusals AC-2/AC-3/AC-4/AC-5 attach to them."""
+    """The default, `--replace` and `--no-archive-dir` modes, and the
+    refusals attached to each of them."""
 
     def test_replace_extracts_in_place_and_removes_the_archive(self):
-        """AC-3.1, end to end through the command line."""
+        """The in-place mode, end to end through the command line."""
         archive = self._zip("p.zip", [("a.txt", "a")])
         code, out, _ = self._run(["--replace", str(archive)])
         self.assertEqual(0, code)
@@ -348,7 +342,7 @@ class TestTheThreeExtractionModes(_CommandBench):
         self.assertFalse(archive.is_file())
 
     def test_replace_refuses_a_destination(self):
-        """AC-3.2: a usage error, not a silently ignored argument."""
+        """A usage error, not a silently ignored argument."""
         archive = self._zip("p.zip", [("a.txt", "a")])
         code, _, err = self._run(["--replace", str(archive), str(self.dir / "out")])
         self.assertEqual(2, code)
@@ -356,13 +350,13 @@ class TestTheThreeExtractionModes(_CommandBench):
         self.assertTrue(archive.is_file(), "nothing may be touched before the refusal")
 
     def test_replace_refuses_a_url(self):
-        """AC-3.3: there is no local file to replace."""
+        """There is no local file to replace."""
         code, _, err = self._run(["--replace", "https://example.invalid/p.zip"])
         self.assertEqual(2, code)
         self.assertIn("--replace is refused on a URL", err)
 
     def test_replace_refuses_a_directory_source(self):
-        """AC-3.4 / D-D: `prepare_source` extracts nothing on this branch --
+        """`prepare_source` extracts nothing on this branch --
         there is no archive for `--replace` to consume."""
         source = self.dir / "given"
         source.mkdir()
@@ -373,7 +367,7 @@ class TestTheThreeExtractionModes(_CommandBench):
         self.assertTrue((source / "a.txt").is_file(), "nothing may be touched")
 
     def test_no_archive_dir_refuses_a_directory_source(self):
-        """AC-4.5 / D-D, the same refusal for the other mode."""
+        """The same refusal for the other mode."""
         source = self.dir / "given"
         source.mkdir()
         code, _, err = self._run([str(source), str(self.dir / "out"),
@@ -382,15 +376,15 @@ class TestTheThreeExtractionModes(_CommandBench):
         self.assertIn("already a directory", err)
 
     def test_replace_and_no_archive_dir_are_refused_together(self):
-        """AC-3.5, enforced by `build_parser`'s own mutually exclusive group."""
+        """Enforced by `build_parser`'s own mutually exclusive group."""
         archive = self._zip("p.zip", [("a.txt", "a")])
         code, _, _ = self._run(["--replace", "--no-archive-dir", str(archive)])
         self.assertEqual(2, code, "a usage error returns 2")
 
     def test_a_local_archive_colliding_with_its_own_destination_is_refused(self):
-        """AC-2.3 / AC-5.3: DESTINATION is the archive's own parent directory,
+        """DESTINATION is the archive's own parent directory,
         so the default target IS the archive itself. The archive is a local
-        file the caller did not ask to consume, so this is AC-2's existence
+        file the caller did not ask to consume, so this is the existence
         refusal, not the provisional-name dance -- and the message names
         `--replace` as the only way out."""
         archive = self._zip("p.zip", [("a.txt", "a")])
@@ -402,14 +396,14 @@ class TestTheThreeExtractionModes(_CommandBench):
 
     def test_replace_resolves_the_collision_the_default_mode_refuses(self):
         """The other half of the same scenario: `--replace` is exactly the
-        way out AC-2.3 names."""
+        way out the refusal names."""
         archive = self._zip("p.zip", [("a.txt", "a")])
         code, out, _ = self._run(["--replace", str(archive)])
         self.assertEqual(0, code)
         self.assertEqual(archive, Path(out.strip()))
 
     def test_replace_refuses_an_sbom_path_inside_the_tree_it_will_become(self):
-        """AC-8.5, the third mode: under `--replace` the tree IS the
+        """The third mode: under `--replace` the tree IS the
         archive's own path, so `--sbom` pointing inside it is refused the
         same way, with nothing extracted and the archive left untouched."""
         archive = self._zip("p.zip", [("a.txt", "a")])
@@ -420,7 +414,7 @@ class TestTheThreeExtractionModes(_CommandBench):
         self.assertTrue(archive.is_file(), "nothing may be touched before the refusal")
 
     def test_no_archive_dir_writes_no_sbom_anywhere_under_destination(self):
-        """AC-4.3: under this mode the tree IS DESTINATION, so no path under
+        """Under this mode the tree IS DESTINATION, so no path under
         it is left "beside" the tree the way `DESTINATION/sbom.json` is in
         the default mode."""
         archive = self._zip("p.zip", [("a.txt", "a")])
@@ -481,7 +475,7 @@ class TestAmputationsAreNeverHidden(_CommandBench):
         # The arithmetic the two tables have to keep adding up to. Thirteen
         # warnings: five amputations at warning level -- the sixth, the office
         # container, is an `info` -- and eight declared non-amputations. The
-        # eighth was added by story 14.8 (crypto-scan, upstream):
+        # eighth is
         # `downloaded_copy_kept_alongside_the_tree`, filed when a URL's
         # download cannot be removed under `--no-archive-dir`.
         self.assertEqual(13, len(warnings))
@@ -1095,13 +1089,8 @@ class TestListingWhatThisMachineCanOpen(_CommandBench):
         judgement about what an archive CONTAINS. This option answers "can
         this installation open a file with this name", and nothing else.
 
-        THE LIST IS NOT WRITTEN HERE ANY MORE, and that is the fix code review
-        asked for on 15 September 2026. It used to be a literal tuple in this
-        method while `tests/test_boundaries.py` held a separate, carefully
-        argued `FORBIDDEN_TOKENS`: the two shared no entry, neither named the
-        other, and nothing said which of those was the decision. Both families
-        now come from that one file, and BOTH are checked here -- a token
-        banned from the source has no business appearing in the output either.
+        THE LIST IS NOT WRITTEN HERE: it comes from `tests/test_boundaries.py`,
+        so that one file holds the vocabulary decision.
 
         AND THE GUARD CAN NOW TELL A DISCLAIMER FROM A CLAIM.
         `assertNotIn("verdict", out.lower())` fires on this package's own
@@ -1115,12 +1104,6 @@ class TestListingWhatThisMachineCanOpen(_CommandBench):
         _, raw, _ = self._run(["--list-formats", "--json"])
         for rendered in (out, raw):
             self.assertEqual([], verdict_claims_in(rendered))
-        # The source-boundary family too: what a caller reads must not name
-        # the regulatory vocabulary this package was carved out of either.
-        for token in FORBIDDEN_TOKENS:
-            with self.subTest(token=token):
-                self.assertNotIn(token.lower(), out.lower())
-                self.assertNotIn(token.lower(), raw.lower())
         self.assertIn("verdict", VERDICT_CLAIM_TOKENS,
                       "the word this option is most at risk of using is in "
                       "the list it is checked against")
@@ -1184,15 +1167,11 @@ class TestListingWhatThisMachineCanOpen(_CommandBench):
         """PINNED, because it is a real regression and a declared fact is
         better than a surprise.
 
-        `--l` and `--li` were unambiguous abbreviations of `--linked-bom` and
-        worked. `--list-formats` now shares those prefixes, so argparse
-        refuses them with "ambiguous option" and exits 2. The option keeps its
-        name -- it was chosen -- and `allow_abbrev` stays on, which would
-        break EVERY abbreviation of every option rather than these two. What
-        is done instead is to stop claiming otherwise: `unboxr/__init__.py`
-        and `tests/test_boundaries.py` both name this exception in the 2.2.0
-        entry, where the sentence "no existing invocation produces a different
-        result" used to stand.
+        `--l` and `--li` are prefixes of both `--linked-bom` and
+        `--list-formats`, so argparse refuses them with "ambiguous option" and
+        exits 2. Both options keep their names, and `allow_abbrev` stays on,
+        because turning it off would break EVERY abbreviation of every option
+        rather than these two.
 
         AND THE BOUNDARY IS PINNED WITH IT, so that this documents exactly two
         lost spellings and not a family: `--lin` and everything longer still

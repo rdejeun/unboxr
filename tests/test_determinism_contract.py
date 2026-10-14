@@ -69,7 +69,7 @@ DECLARED_NON_GUARANTEES = (
     # matter of remembering to. The clause that stays TRUE is held here
     # instead, so the next rewrite goes red rather than silent.
     "opens nothing to look inside",
-    # Added by story 14.8 of the upstream project (crypto-scan): the level-0
+    # Added with the three extraction modes: the level-0
     # extraction root is now named after the archive, exactly as a nested
     # one already was, and inherits the SAME non-guarantee guarantee 2(a)
     # already carried for that final name -- extended down to level 0, not
@@ -444,21 +444,19 @@ class TestTheWrittenContract(unittest.TestCase):
         """Adding a property to this document is an addition to the published
         contract, and the rule is written ONCE, where the table itself lives.
 
-        THE PREMISE OF THIS DOCSTRING CHANGED AT 3.0 and the assertion did not.
-        It used to read "every property is emitted systematically, so every
-        consumer sees a new one" -- true when a property appeared on every
-        component, false now that one is written only when something abnormal
-        happened. What it holds is unaffected: a name added to the table is a
+        A component property is written only when something abnormal happened
+        to it, so not every consumer sees a new one on every document. What
+        this holds does not depend on that: a name added to the table is a
         name added to the contract."""
         self.assertIn("adding a property to the document is an addition to the "
                       "contract", self.readme.lower())
 
-    def test_the_contract_names_no_upstream_requirement_number(self):
+    def test_the_contract_names_no_backlog_identifier(self):
         """The guarantees are unboxr's own; they are not stated by reference to
-        a requirement of a project its users have never heard of.
+        a requirement of a backlog its users have never heard of.
 
-        `D8` and `D22` are decision numbers of that same upstream backlog: the
-        naming rules they settled are stated here as rules, never by number."""
+        `D8` and `D22` are decision numbers of such a backlog: the naming
+        rules they settled are stated here as rules, never by number."""
         for token in ("NFR-02", "NFR-07", "NFR-13", "AC-1", "AC-2", "AC-5",
                       "D8", "D22"):
             with self.subTest(token=token):

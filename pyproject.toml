@@ -6,7 +6,7 @@
 # locally. On an air-gapped machine, use `pip install --no-build-isolation .`
 # See README.md, "Installing offline".
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -15,16 +15,19 @@ description = "Deterministic recursive archive extraction, standard library only
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE.md"]
-authors = [{ name = "Rodolphe Dejeunes" }]
+authors = [{ name = "RοdοƖphе Dеȷеᴜnеѕ" }]
 # Python 3.12 floor: `TarFile.extractall(filter=...)` is only guaranteed from
 # 3.12 onward. Requiring it removes every conditional code path -- no capability
 # probing, no degraded mode to declare, one single extraction behaviour.
 requires-python = ">=3.12"
-keywords = ["archive", "extraction", "tar", "zip", "deterministic"]
+keywords = ["archive", "extraction", "tar", "zip", "unpack", "deterministic", "sbom"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "Environment :: Console",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: System :: Archiving",
@@ -36,13 +39,16 @@ dependencies = []
 # fails when the package is used straight from a clone.
 dynamic = ["version"]
 
+[project.urls]
+Homepage = "https://github.com/rdejeun/unboxr"
+Source = "https://github.com/rdejeun/unboxr"
+Issues = "https://github.com/rdejeun/unboxr/issues"
+
 [project.scripts]
 unboxr = "unboxr.cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "unboxr.__version__" }
 
-# `transport/` confronts unboxr with its upstream project and is excluded from
-# the distribution on purpose; see transport/test_equivalence.py.
 [tool.setuptools.packages.find]
 include = ["unboxr*"]

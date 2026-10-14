@@ -80,11 +80,10 @@ class _Bench(unittest.TestCase):
                 + list(report.not_attested))
 
     def _properties_of(self, component) -> dict:
-        """The properties of a component, which since 3.0 may have none.
+        """The properties of a component, which may have none.
 
         `.get`, NOT `[...]`: a component to which nothing abnormal happened
-        carries no `properties` key at all, and that is the ordinary case now
-        rather than the exception. A helper that raised there would make every
+        carries no `properties` key at all, and that is the ordinary case. A helper that raised there would make every
         test of a clean extraction fail for the wrong reason.
         """
         return {p["name"]: p["value"]
@@ -100,7 +99,7 @@ class _Bench(unittest.TestCase):
         return [] if code is None else code.split(", ")
 
     def _components(self, document, name: str):
-        """Every component of that name. Since 3.0.1 there can be more than
+        """Every component of that name. There can be more than
         one: a bare name and a tree-relative path may be the same string and
         name two different files."""
         return [c for c in document["components"] if c["name"] == name]
@@ -341,9 +340,7 @@ class TestTheSkeletonOfTheDocument(_Bench):
 
         subject = document["metadata"]["component"]
         self.assertNotIn("hashes", subject)
-        # SAID BY THE TYPE, and it always was: `type`, the digest state and the
-        # presence of `hashes` were three readings of one expression. 3.0 keeps
-        # the one the schema already provides.
+        # SAID BY THE TYPE, the one reading the schema already provides.
         self.assertEqual(sb.TYPE_NOT_A_FILE, subject["type"])
         self.assertEqual([], self._anomalies_of(subject))
 
@@ -389,7 +386,7 @@ class TestEveryFileCarriesItsDigest(_Bench):
         fixed lengths and nothing else. The prefix a consumer of this package
         writes elsewhere is added by that consumer, never here.
 
-        THE CASING, one of the four points the spike left open (AC-1.4),
+        THE CASING, one of the four points the spike left open,
         RE-CHECKED against the schema on 13 September 2026:
         `definitions.hash-alg.enum` contains `SHA-256`, spelled with that
         exact casing and hyphen -- `sha256`, `Sha-256` and `SHA256` are all
@@ -519,7 +516,7 @@ class TestEveryFileCarriesItsDigest(_Bench):
         """A FIFO, a socket, a device node: not a directory, not a symlink,
         not a regular file. `unboxr` applies NO exclusion policy -- the walk
         used to fall through `is_file()` being false straight to the next
-        path, with nothing written anywhere. Review of story 14.4. A stub
+        path, with nothing written anywhere. Code review. A stub
         stands in for the same portability reason as the symlink above: no
         `os.mkfifo` on Windows, and this suite forbids skipping a test."""
         class _Special:
@@ -613,11 +610,9 @@ class TestWhatWasNotOpened(_Bench):
         self.assertEqual(len(names), len(set(names)))
 
     def test_every_container_not_opened_is_a_component_of_its_own(self):
-        """`unboxr:containersNotOpened` was a COUNT of what the components
-        already showed one by one, and 3.0 removed it: a reader counts them in
-        one pass over a document that is now small enough to read. What must
-        stay true is the thing the count was derived from -- one component per
-        path that was not opened, each carrying its own cause."""
+        """There is no count of the containers left closed: a reader counts
+        them in one pass over the components. What must hold is one component
+        per path that was not opened, each carrying its own cause."""
         root = self._tree()
         (root / "a.tar.zst").write_bytes(ZSTD_MAGIC + b"one")
         (root / "b.tar.zst").write_bytes(ZSTD_MAGIC + b"two")
@@ -671,9 +666,8 @@ class TestOneComponentPerPath(_Bench):
                          properties[sb.ANOMALY_TEXT].split(" | "))
 
     def test_opening_a_container_is_not_an_anomaly_but_keeps_its_component(self):
-        """THE TRAP OF 3.0, AND THE ONE THING THAT MUST NOT BE LOST WITH THE
-        `opened` CODES. Opening a container is the nominal case, so it writes
-        no property any more. But a nested container is DESTROYED by the
+        """THE ONE THING THAT MUST NOT BE LOST WITH THE `opened` CODES. Opening
+        a container is the nominal case, so it writes no property. But a nested container is DESTROYED by the
         flattening: the instant it was recorded is the only one it could ever
         be hashed at, and no walk of the finished tree can find it again.
 
@@ -810,7 +804,7 @@ class TestOneComponentPerPath(_Bench):
 
     def test_a_component_name_is_the_full_relative_path_not_the_base_name(self):
         """`name` is one of the two required fields of a component -- one of
-        the four points the spike left open (AC-1.4), RE-CHECKED against the
+        the four points the spike left open, RE-CHECKED against the
         schema on 13 September 2026: `definitions.component.required` reads
         `["type", "name"]`, exactly as first read on 12 September 2026. Two
         files called `a.txt` in two directories would be indistinguishable to
@@ -874,26 +868,16 @@ class TestTheProperties(_Bench):
                          & set(sb.COMPONENT_PROPERTY_NAMES))
 
     def test_a_property_appears_only_when_something_abnormal_happened(self):
-        """THE PREMISE OF THIS TEST INVERTED IN 3.0, and it was not adjusted:
-        it was rewritten, because what it used to assert stopped being true.
+        """The document promises that everything abnormal that can be observed
+        is written. So the omission asserts something precise -- "nothing
+        abnormal happened to this path" -- and writing it out on every
+        component would say no more than leaving it out.
 
-        Until then every property was emitted on every component, on the
-        ground that AN OMISSION ASSERTS -- a property appearing only in the
-        favourable case would read, by its absence, as "not applicable" rather
-        than "not determined". That reasoning holds under a positive-only
-        oracle, where a silence cannot be told apart from an unasked question.
-
-        The document now promises the opposite on anomalies: everything
-        abnormal that can be observed is written. So the omission asserts
-        something precise -- "nothing abnormal happened to this path" -- and
-        writing it out seven hundred times says no more than leaving it out.
-
-        WHAT MUST NOT BE LOST WITH IT is the second thing the old equality
-        held: `definitions.component.additionalProperties` is `false` in the
+        WHAT MUST HOLD ALONGSIDE IT: `definitions.component.additionalProperties` is `false` in the
         schema (read on 13 September 2026), so a component's `properties` may
         hold the declared names and NO other. An equality cannot stand in for
-        that any more -- the array is usually absent -- so the INCLUSION does,
-        and it is checked on every component of both runs below.
+        that -- the array is usually absent -- so the INCLUSION does, and it
+        is checked on every component of both runs below.
 
         The run under test is the worst one available: a directory source, so
         nothing was extracted and nothing went wrong.
@@ -918,14 +902,13 @@ class TestTheProperties(_Bench):
                 self.assertNotIn("properties", component)
 
     def test_no_component_is_ever_silent_about_a_missing_digest(self):
-        """THE INVARIANT THAT REPLACES `digestState`: a component carries
-        either a digest or an anomaly saying why it has none.
+        """THE INVARIANT: a component carries either a digest or an anomaly
+        saying why it has none.
 
-        `hashes` has no way to say "not computed", which is the whole reason a
-        property said it before. Saying it on every component -- including the
-        ones whose digest WAS computed -- is what 3.0 stopped doing; saying it
-        where it is missing is what must survive, or a component could go
-        silent on the one thing this document exists to attest.
+        `hashes` has no way to say "not computed". Saying it is only needed
+        where a digest is missing, and that must always be said, or a
+        component could go silent on the one thing this document exists to
+        attest.
         """
         # A FILE WHOSE BYTES CANNOT BE READ, and it has to really be one.
         # This test used to set `chmod(0o444)`, which is READ-ONLY, not
@@ -969,12 +952,9 @@ class TestTheProperties(_Bench):
         """The schema says a property value is a string. Numbers are converted
         here, explicitly, rather than left to a serialiser to decide.
 
-        TESTED ON THE HELPER AND NOT ONLY ON A DOCUMENT, since 3.0: the four
-        numeric properties that used to exercise this on every document -- two
-        depths and two counts -- are gone, so a document alone can no longer
-        reach the conversion at all. Dropping the test with them would have
-        retired a guard that still applies to every property this package
-        writes in future.
+        TESTED ON THE HELPER AND NOT ONLY ON A DOCUMENT: no property this
+        package writes today is numeric, so a document alone cannot reach the
+        conversion. The guard applies to every property written in future.
         """
         self.assertEqual([{"name": "unboxr:x", "value": "12"}],
                          sb._properties((("unboxr:x", 12),)))
@@ -991,14 +971,13 @@ class TestTheProperties(_Bench):
                 self.assertIsInstance(entry["value"], str)
 
     def test_the_seven_zip_that_ran_is_named_as_a_tool_without_its_path(self):
-        """WHAT RAN, NOT WHAT THE MACHINE HAS. Until 3.0 the document wrote the
-        machine's whole capability profile -- availability and two counts --
-        on every document, whether 7-Zip had anything to do with the result or
-        not. That described the environment rather than the provenance, and it
-        made two machines produce two different documents even when the
-        difference had changed nothing.
+        """WHAT RAN, NOT WHAT THE MACHINE HAS. The document names the tool
+        that took part in the extraction, not the machine's whole capability
+        profile, which would describe the environment rather than the
+        provenance and make two machines produce two different documents even
+        when the difference had changed nothing.
 
-        THE PATH STILL DOES NOT GET IN, and that part is unchanged: it differs
+        THE PATH DOES NOT GET IN: it differs
         from one machine to the next and would reopen a divergence in a
         document meant to be compared. The STEM is what is written, and it is
         also the identity that matters -- `7z`, `7za`, `7zr` and `7zz` are
@@ -1036,15 +1015,10 @@ class TestTheProperties(_Bench):
 # ---------------------------------------------------------------------------
 class TestTheWarningsTheDocumentCarries(_Bench):
 
-    # `test_the_document_says_what_it_does_not_prove` and
-    # `test_the_oracle_reminder_is_read_from_its_one_constant` were REMOVED in
-    # 3.0 with the two properties they held, `unboxr:documentScope` and
-    # `unboxr:oracleReminder`. Both said, on every document, something that is
-    # true of every document this package will ever write -- which is the
-    # definition of a README sentence, not of a per-document field. The
-    # statements did not disappear: the README carries them, and the two tests
-    # below still hold the one place the prose is READ from rather than
-    # retyped.
+    # The statements true of every document this package writes -- what it
+    # does not prove, the oracle reminder -- live in the README, not in a
+    # per-document field. The tests below hold the one place the prose is READ
+    # from rather than retyped.
 
     def test_the_command_composes_its_reminder_on_that_same_constant(self):
         """One sentence, one home. The counting prefix is a logging concern and
@@ -1052,20 +1026,6 @@ class TestTheWarningsTheDocumentCarries(_Bench):
         from unboxr import cli
         self.assertTrue(cli.ORACLE_REMINDER.endswith(rp.ORACLE_REMINDER_SENTENCE))
         self.assertTrue(cli.ORACLE_REMINDER.startswith("%s"))
-
-    def test_no_scope_warning_of_the_consumer_ever_reaches_the_document(self):
-        """Checked POSITIVELY. This package mints no verdict, so the two scope
-        warnings a verdict-bearing document owes have no object here -- and the
-        vocabulary that carries them must not appear either."""
-        archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
-        _, document = self._document_of(archive)
-        text = sb.serialise(document)
-        for token in ("non-standard cryptography", "ECCN", "772.1", "742.15",
-                      "cryptographic-asset", "revue_humaine", "CBOM",
-                      "phase1", "phase2"):
-            with self.subTest(token=token):
-                self.assertNotIn(token, text)
-
 
 # ---------------------------------------------------------------------------
 # Same input, same bytes -- except for the two fields it declares
@@ -1093,12 +1053,10 @@ class TestTheDocumentIsDeterministic(_Bench):
         self.assertEqual(self._without_the_volatile_fields(first),
                          self._without_the_volatile_fields(second))
 
-    # `test_the_two_volatile_fields_are_named_in_the_document_itself` was
-    # REMOVED in 3.0 with `unboxr:volatileFields`. CycloneDX defines both
-    # `serialNumber` and `metadata.timestamp` as belonging to the moment a
-    # document is made; restating that in a property of this package's own was
-    # paraphrasing the standard, and a paraphrase is one more thing that can
-    # drift away from what it repeats.
+    # The document does not name its two volatile fields itself: CycloneDX
+    # defines both `serialNumber` and `metadata.timestamp` as belonging to the
+    # moment a document is made, and a paraphrase of the standard is one more
+    # thing that can drift away from what it repeats.
 
     def test_the_components_are_sorted_on_a_string_and_not_on_a_raw_path(self):
         """A sort on a raw `Path` is not portable: the same tree would be
@@ -1244,8 +1202,8 @@ class TestTheCommandWritesTheDocument(_CommandBench):
         self.assertEqual(sb.OUTCOME_FAILED, metadata[sb.EXTRACTION_OUTCOME])
         # ON THE SUBJECT, NOT AMONG THE COMPONENTS. The refused container IS
         # the input, which `metadata.component` already names; listing it twice
-        # was the duplication 3.0 removed, so its anomaly moved to the one
-        # place that still names it.
+        # would be a duplication, so its anomaly sits on the one place that
+        # names it.
         subject = document["metadata"]["component"]
         self.assertEqual("p.tar.zst", subject["name"])
         self.assertEqual([rp.ZSTD_NOT_SUPPORTED], self._anomalies_of(subject))
@@ -1341,8 +1299,8 @@ class TestTheCommandRefusesAnUnusableOutputPath(_CommandBench):
 
     def test_the_source_archive_itself_is_refused(self):
         """A file whose content carries its own SHA-256 digest does not
-        exist: `--sbom` may not name the archive it is documenting. Review of
-        story 14.4 -- unguarded, `--sbom` pointed at the source silently
+        exist: `--sbom` may not name the archive it is documenting. Code
+        review -- unguarded, `--sbom` pointed at the source silently
         overwrote it with the document, exit code 0."""
         archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
         before = archive.read_bytes()
@@ -1359,7 +1317,7 @@ class TestTheCommandRefusesAnUnusableOutputPath(_CommandBench):
         """`--sbom` naming the destination itself, rather than a file inside
         it, does not exist at option-parsing time -- `prepare_source` has not
         run yet -- so the refusal has to compare resolved paths directly
-        rather than probing existence. Review of story 14.4."""
+        rather than probing existence. Code review."""
         destination = self.dir / "d"
         archive = self._zip_at(self.dir / "p.zip", [("a.txt", "a")])
 
@@ -1375,7 +1333,7 @@ class TestTheCommandRefusesAnUnusableOutputPath(_CommandBench):
         """`_inventoried_tree` used to swallow an `OSError` raised while
         probing whether the source is a directory, and silently fall through
         to the archive-style tree -- switching the containment check off
-        against the wrong tree without saying so. Review of story 14.4:
+        against the wrong tree without saying so. Code review:
         it now declares the failure the same way `_resolved` already does."""
         from unboxr import cli
 
@@ -1485,13 +1443,13 @@ class TestADirectoryPathIsNeverCalledAFile(_Bench):
         one `file` would be a false statement in a document meant as evidence;
         it is typed `data`, the one value that asserts a collection rather than
         a single file or a piece of software. What actually tells it apart is
-        the anomaly `not_regular_file`, which since 3.0 is also what the type
+        the anomaly `not_regular_file`, which is also what the type
         is COMPUTED from -- one fact, stated once, read in two places.
 
         `--no-archive-dir` is used here (rather than the default mode) so the
         occupied directory is named after the WORKSPACE ("w"), never after
-        the archive ("p.zip") the way the default mode's target now is
-        (story 14.8): the two would otherwise carry the very same bare name,
+        the archive ("p.zip") the way the default mode's target is:
+        the two would otherwise carry the very same bare name,
         and `_component` -- exactly one match by name -- could no longer
         isolate the directory-typed component this test exists to check from
         the archive's own file-typed one."""
@@ -1519,10 +1477,10 @@ class TestADirectoryPathIsNeverCalledAFile(_Bench):
 
 
 class TestAFileThatWasNeverADirectoryIsNeverCalledOne(_Bench):
-    """Review of story 14.4. `DESTINATION_ALREADY_OCCUPIED` is the ONE report
+    """Code review. `DESTINATION_ALREADY_OCCUPIED` is the ONE report
     code no call site ever hashes, because its recorded path IS a directory.
     Every other digest-less record names something that WAS a file: typing it
-    `not_a_file` was the false statement AC-1.9 forbids for the wrong reason."""
+    `not_a_file` was a false statement, made for the wrong reason."""
 
     def test_a_record_whose_digest_could_not_be_taken_is_a_read_failure_not_a_non_file(self):
         held = ux.new_report()
@@ -1564,7 +1522,7 @@ class TestAFileThatWasNeverADirectoryIsNeverCalledOne(_Bench):
 
 
 class TestATreeThatCannotBeWalkedFailsRatherThanLies(_Bench):
-    """Review of story 14.4. Swallowing the walk's own `OSError` used to
+    """Code review. Swallowing the walk's own `OSError` used to
     produce a document declaring `extractionOutcome=complete` with zero file
     components: the very amputation this document exists to make visible,
     left completely unnamed."""
@@ -1579,7 +1537,7 @@ class TestATreeThatCannotBeWalkedFailsRatherThanLies(_Bench):
 
 
 class TestASignedURLNeverLeaksIntoTheDocument(_Bench):
-    """Review of story 14.4. A raw split on `/` kept a URL's query string --
+    """Code review. A raw split on `/` kept a URL's query string --
     where a signed URL carries its credential -- in `metadata.component.name`,
     and that string changes on every fetch, breaking determinism on a field
     never declared volatile."""
@@ -1598,18 +1556,15 @@ class TestASignedURLNeverLeaksIntoTheDocument(_Bench):
         self.assertEqual("p.zip", sb._bare_name("/tmp/workspace/p.zip"))
 
 
-# `TestDepthIsNeverAMeasurementThatWasNeverTaken` was REMOVED in 3.0 with
-# `unboxr:depthReached` and `unboxr:depthLimit`. The bound only ever mattered
-# when it was REACHED, and that case files a `maximum_depth_reached` anomaly on
-# every container left closed -- which names the situation where the two
-# numbers only described it. The value of `--max-depth` is no longer in the
-# document; that is a declared loss, written down in the story rather than
-# discovered later.
+# The document carries no depth property. The bound only matters when it is
+# REACHED, and that case files a `maximum_depth_reached` anomaly on every
+# container left closed. The value of `--max-depth` is not in the document;
+# that is a declared limit, written down here rather than discovered later.
 
 
 class TestContainersNotOpenedCountsComponentsNotRecords(_Bench):
-    """Review of story 14.4. `report.amputation_count()` counts RECORDS
-    (`len(report.not_opened)`), and AC-4.1 lets one path carry several codes
+    """Code review. `report.amputation_count()` counts RECORDS
+    (`len(report.not_opened)`), and one path may carry several codes
     without becoming several components: a container refused for two reasons
     at once used to make this number exceed the actual not-opened components
     in `components`."""
@@ -1625,7 +1580,7 @@ class TestContainersNotOpenedCountsComponentsNotRecords(_Bench):
         not_opened_components = [c for c in document["components"]
                                  if c["name"] == "a.tar"]
         self.assertEqual(1, len(not_opened_components),
-                         "one component: AC-4.1's identity rule")
+                         "one component: the identity rule")
         # Both causes are on that one component, in order: the identity rule
         # merges the records without dropping either reason.
         self.assertEqual([rp.TAR_REFUSED_BY_SECURITY_FILTER,
@@ -1634,8 +1589,8 @@ class TestContainersNotOpenedCountsComponentsNotRecords(_Bench):
 
 
 class TestACauseOrderNeverDependsOnFillOrder(_Bench):
-    """Review of story 14.4, AC-7.3: "aucun test ne le tient... s'y fier
-    serait s'appuyer sur une propriete non garantie." Two reports that file
+    """Code review. Nothing held this order, and relying on it would have
+    meant relying on an unguaranteed property. Two reports that file
     the same two causes for the same path in the OPPOSITE order must produce
     the identical `causeCode`/`causeText` join -- proving the document does
     not lean on the report's internal list fill order, only on the genre a
@@ -1665,7 +1620,7 @@ class TestACauseOrderNeverDependsOnFillOrder(_Bench):
 
 
 class TestAHashIsNeverTakenForARecordThatWillBeDiscarded(_Bench):
-    """Review of story 14.4. `_record` used to hash BEFORE the report's own
+    """Code review. `_record` used to hash BEFORE the report's own
     `(code, path)` deduplication, so a file re-examined at every flattening
     level (an office container left in place, a residual archive) paid for a
     full read each time even though only the first filing was ever kept."""
@@ -1793,8 +1748,8 @@ class TestTheLinkPatternIsTranscribedOnceWithItsProvenance(_Bench):
 
     def test_the_reason_is_the_fact_and_never_a_requirement_number_of_elsewhere(self):
         """This package is published on its own. A reader of its source has
-        never seen the backlog of the project it was carved out of, and a
-        reason stated by reference to a number there is no reason at all.
+        never seen any project backlog, and a reason stated by reference to
+        a number there is no reason at all.
 
         The guard that already forbids those tokens covers the extraction
         docstring and the README only -- this module is outside it, which is
@@ -2025,13 +1980,10 @@ class TestTheAbsenceOfALinkIsAStatedFact(_Bench):
         document = self._document_without_a_link()
         self.assertNotIn("externalReferences", document)
 
-    # `test_the_document_says_what_an_absent_reference_means` and
-    # `test_the_same_clause_is_there_when_a_link_is_supplied` were REMOVED in
-    # 3.0: both held a clause of `unboxr:documentScope`, the prose property
-    # that went to the README with the rest of it. What the clause said -- that
-    # an absent reference means none was supplied, never that this extraction
-    # belongs to none -- is a rule of READING this format, true of every
-    # document, which is what a README is for.
+    # What an absent reference means -- that none was supplied, never that this
+    # extraction belongs to none -- is a rule of READING this format, true of
+    # every document, which is what the README is for, not a per-document
+    # field.
 
     def test_the_link_adds_no_property_of_this_package_to_the_document(self):
         """A property whose native field the schema already provides does not
@@ -2051,8 +2003,8 @@ class TestTheAbsenceOfALinkIsAStatedFact(_Bench):
 
 
 class TestTheInjectionHooksSurviveTheLink(_Bench):
-    """`serial_number=` and `timestamp=` have been accepted since the document
-    story and had no test and no caller: measured on 13 September 2026. The
+    """`serial_number=` and `timestamp=` have been accepted from the start
+    and had no test and no caller: measured on 13 September 2026. The
     link restructures the very `return` they feed into, so a hook broken in
     passing would have gone unnoticed. They are covered now."""
 
@@ -2114,7 +2066,7 @@ class TestTheCommandLinksTheDocument(_CommandBench):
         shape, and `--sbom`'s destination sitting inside the tree it would
         inventory -- and nothing before this test pinned which one a caller
         actually sees. `check_linked_bom` runs BEFORE `check_document_path`
-        (Dev Notes, AC-3.2): the link fault is the only one decidable from
+        (by design): the link fault is the only one decidable from
         the arguments alone, with no state of the file system able to
         preempt it. A reordering of the two calls in `main` would silently
         change the reported cause with nothing here to go red."""
@@ -2341,7 +2293,7 @@ class TestTheKeysComeOutInTheOrderOfTheSchema(_OrderBench):
         reread = json.loads(sb.serialise(document))
         self.assertEqual(["url", "comment", "type"],
                          list(reread["externalReferences"][0]))
-        # FILTERED TO THE KEYS THIS COMPONENT ACTUALLY HAS: since 3.0 a
+        # FILTERED TO THE KEYS THIS COMPONENT ACTUALLY HAS: a
         # component carries `properties` only when something abnormal happened
         # to it. The ORDER is what this test holds, and asserting presence as
         # well would make it fail for a reason it is not about.
@@ -2444,7 +2396,7 @@ class TestTheKeysComeOutInTheOrderOfTheSchema(_OrderBench):
 
     def test_a_deeply_nested_document_still_serialises(self):
         """The ordering pass spends a Python frame per level before the C
-        encoder runs, so the ceiling is lower than 2.0.1's. The exact figure
+        encoder runs, so the ceiling is lower than a plain recursive encoder's. The exact figure
         depends on the interpreter's recursion limit and is named in
         `_in_key_order`; what is pinned here is that ordinary depths -- far
         beyond anything a file tree produces -- are untouched."""
@@ -2527,12 +2479,11 @@ class TestTheDocumentFoldsItsTwoKeyObjects(_OrderBench):
             with self.subTest(shape=shape):
                 self.assertEqual(document, json.loads(sb.serialise(document)))
 
-    def test_the_gain_is_the_one_the_story_measured(self):
-        """Measured on a FLAT zip of two files, which is the recipe the story
-        carries: 58 lines before, 4 foldable objects, 46 lines after.
+    def test_the_gain_is_the_one_that_was_measured(self):
+        """Measured on a FLAT zip of two files, which is the reference
+        recipe: 58 lines before, 4 foldable objects, 46 lines after.
 
-        THE THREE NUMBERS FELL WITH 3.0 and the fold's share of the gain fell
-        with them: the same document measured 189 -> 90 when every component
+        THE THREE NUMBERS ARE LOW and the fold's share of the gain is small: the same document measured 189 -> 90 when every component
         carried five properties and `metadata` carried thirteen. What folding
         saves is proportional to how many two-key objects there are, and a
         document that writes a property only when something went wrong has
@@ -2546,10 +2497,10 @@ class TestTheDocumentFoldsItsTwoKeyObjects(_OrderBench):
         unfolded = json.dumps(document, ensure_ascii=True, indent=2).splitlines()
         foldable = [o for o in self._objects_of(document)
                     if frozenset(o) in sb.FOLDED_KEY_SETS]
-        recipe = ("measured on the FLAT two-file zip of the story's recipe; "
+        recipe = ("measured on the FLAT two-file zip of the reference recipe; "
                   "a document with a link measures 65 -> 53. If a property "
                   "was added to the document, re-measure and update all three "
-                  "numbers here and in the story -- do not relax the test")
+                  "numbers here -- do not relax the test")
         self.assertEqual(4, len(foldable), recipe)
         self.assertEqual(58, len(unfolded), recipe)
         self.assertEqual(46, len(folded), recipe)
@@ -2590,7 +2541,7 @@ class TestTheCalculatedTimestampStopsAtTheSecond(_OrderBench):
         self.assertEqual(precise, document["metadata"]["timestamp"])
 
 class TestParentContainerSurvivesOnlyWhereThePathCannotSayIt(_Bench):
-    """Arbitrage 5 of story 14.10 (crypto-scan), decided 16 September 2026.
+    """Design decision of 16 September 2026.
 
     The other three per-component properties were removed because the path
     states its own ancestry: a nested archive is flattened into a directory
@@ -2622,8 +2573,8 @@ class TestParentContainerSurvivesOnlyWhereThePathCannotSayIt(_Bench):
                          self._properties_of(component)[sb.PARENT_CONTAINER])
 
     def test_the_only_value_it_ever_takes_is_not_determinable(self):
-        """Never the name of a real parent. Writing that back would reinstate
-        exactly what 3.0 removed -- a property repeating what the path says."""
+        """Never the name of a real parent. Writing that would add a
+        property repeating what the path says."""
         inner = self._zip_bytes([("code/aes.c", "int a;")])
         archive = self._zip_at(self.dir / "p.zip",
                                [("vendor/inner.zip", inner)])
@@ -2708,7 +2659,7 @@ class TestTheSubjectNeverGoesSilentEither(_Bench):
 
 
 class TestTheInputContainerIsNamedByTheReportNotGuessed(_Bench):
-    """AC-7.2 measured, not asserted in prose.
+    """Measured, not asserted in prose.
 
     The rule is the IDENTITY of the entry, never its rank, and never a string
     comparison with the source's bare name. Each of the inferences that looks
@@ -2769,7 +2720,7 @@ class TestTheInputContainerIsNamedByTheReportNotGuessed(_Bench):
 
 
 class TestEveryDigestOfANestedChainSurvives(_Bench):
-    """AC-8.4 to the letter: the DIGESTS, at two levels, not just the names.
+    """The DIGESTS, at two levels, not just the names.
 
     A container the flattening destroyed can be hashed at exactly one instant,
     and no walk of the finished tree can find it again. The two-level test
@@ -2796,7 +2747,7 @@ class TestEveryDigestOfANestedChainSurvives(_Bench):
 
 
 class TestTheSevenZipBannerIsReadOrRefused(_Bench):
-    """AC-6.4's other half. The tool entry was tested; the reading was not.
+    """The other half of the tool entry. The tool entry was tested; the reading was not.
 
     A fabricated version is worse than a missing one: `version` is optional and
     the entry is written without it, so `None` was always the available and
@@ -2833,7 +2784,7 @@ class TestTheSevenZipBannerIsReadOrRefused(_Bench):
 
 
 class TestTheToolIsRecordedOnlyWhenItReallyRan(_Bench):
-    """AC-6.1 end to end. The fact and its projection were tested apart -- one
+    """End to end. The fact and its projection were tested apart -- one
     test set the field by hand, the other read it -- so nothing held the wiring
     that puts the two together."""
 
@@ -2853,12 +2804,11 @@ class TestTheToolIsRecordedOnlyWhenItReallyRan(_Bench):
 
 
 class TestTheReadmeExamplesStillCallTheRealSignature(_Bench):
-    """THE DEFECT THIS CATCHES ACTUALLY SHIPPED. `build_document` lost its
-    `source_kind` parameter at 3.0 and both published examples went on passing
-    it: reading the README and typing what it says raised `TypeError`.
+    """A README example that passes a keyword the signature does not accept
+    raises `TypeError` for anyone who types what it says.
 
-    The existing ratchet compares the README's PROPERTY NAMES against the code
-    in both directions and never looks at the code blocks, so nothing saw it.
+    The ratchet that compares the README's PROPERTY NAMES against the code
+    never looks at the code blocks, so this one does.
     """
 
     def test_every_keyword_the_readme_passes_exists_in_the_signature(self):

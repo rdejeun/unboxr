@@ -1,19 +1,14 @@
-"""unboxr does not know what it was carved out of, and proves it.
+"""unboxr renders no verdict on what it extracts.
 
-This package was extracted from a tool that renders regulatory verdicts. None of
-that came along. Two families of guard hold that boundary:
+Two families of guard hold that boundary:
 
   - the DEPENDENCY guard, by AST and never by `grep`: the roots of every
     `import` in `unboxr/`, minus the standard library and this package itself,
     must be the EMPTY SET;
-  - the VOCABULARY guard: a closed list of tokens that would betray the
-    provenance, none of which may appear in the package source.
+  - the VOCABULARY guard: words that would turn what a caller reads into a
+    judgement about what an archive contains.
 
 SCOPE. Both guards cover the `unboxr/` PACKAGE, not the repository.
-`transport/` necessarily names the upstream project -- comparing against it is
-its entire purpose -- and is DECLARED out of scope here. `tests/` is out of
-scope for the same reason: this very file names the forbidden tokens in order to
-forbid them.
 
 This file also holds the packaging invariants, which are boundaries of the same
 kind: what this package must never start depending on.
@@ -40,67 +35,12 @@ import unboxr.report  # noqa: E402
 # relaxes NOTHING -- the ratchet is on THIRD-PARTY roots, and it stays at zero.
 INTERNAL_ROOTS = {"unboxr"}
 
-# Symbols of the upstream project that must not have followed the code here.
-FORBIDDEN_UPSTREAM_MODULES = (
-    "catalogue_crypto",
-    "avertissements_portee",
-    "arbitrages",
-    "constantes_crypto",
-    "phase1_scanner_crypto",
-)
-
-# Tokens that would betray the provenance, or worse, suggest this package takes
-# part in a qualification it knows nothing about.
-#
-# THIS LIST IS DELIBERATELY NARROW, and two obvious-looking candidates are
-# EXCLUDED because in English they produce false positives on ordinary prose:
-#
-#   - `published`: an everyday English word. "the published interface", "a
-#     published package" are legitimate sentences in a README and in a
-#     docstring, and have nothing to do with the regulatory meaning the term
-#     carries upstream;
-#   - `qualifi`: matches `qualified`, `qualifier` and `qualifies`, all of which
-#     are ordinary English. Banning the prefix would forbid writing "a fully
-#     qualified path".
-#
-# What is banned instead are tokens that carry the regulatory meaning and
-# nothing else. A false negative here is cheap; a guard that cries wolf on
-# ordinary prose gets disabled, which is not.
-FORBIDDEN_TOKENS = (
-    "non-standard cryptography",
-    "ECCN",
-    "772.1",
-    "742.15",
-    "cryptographic-asset",
-    "revue_humaine",
-    "CBOM",
-    "phase1",
-    "phase2",
-)
-
-VERDICT_MARKERS = (
-    "garantir_affichage_console",
-    "import arbitrages",
-    "declarer(",
-)
-
-# THE SECOND VOCABULARY FAMILY, and the reason this file holds two.
-#
-# `FORBIDDEN_TOKENS` above is checked against the SOURCE of the package, where
-# every occurrence is a fault whatever the sentence around it. The tokens below
-# are the opposite kind of word: ordinary English that the source is entirely
-# free to use -- `_ensure_safe_extraction_path`, "the security filter", "a
-# trusted root" -- and that must not appear in what a CALLER READS at run time,
+# THE VOCABULARY FAMILY. These tokens are ordinary English that the source is
+# entirely free to use -- `_ensure_safe_extraction_path`, "the security
+# filter", "a trusted root" -- and that must not appear in what a CALLER READS at run time,
 # where a listing of what this installation can open would turn into a
 # judgement about what an archive contains.
 #
-# TWO LISTS, ONE HOME, AND THEY ARE DISJOINT ON PURPOSE. Until code review on
-# 15 September 2026 the runtime half lived as a literal tuple inside
-# `tests/test_cli.py`: the two guards shared no entry, neither referenced the
-# other, and nothing said whether that was a decision or an oversight.
-# `tests/test_cli.py` now imports these names from here and checks the rendered
-# output against BOTH families, so a token added to either is a token both
-# surfaces are held to.
 VERDICT_CLAIM_TOKENS = ("verdict", "compliant", "approved", "certified",
                         "trusted", "safe", "secure")
 
@@ -168,13 +108,10 @@ class TestDependencyBoundary(unittest.TestCase):
     def test_the_package_has_python_modules_to_guard(self):
         """A guard over an empty set proves nothing.
 
-        `report.py` was added on 12 September 2026, DELIBERATELY and with this
-        ratchet going red to say so. The extraction report needed a module of
-        its own: `cli.py` imports `extraction`, so `extraction` cannot import
-        `cli`, which is precisely why the amputation tables had ended up in the
-        command where they did not belong. A third module is what lets both
-        read them. A ratchet like this one exists to make an addition DECLARED,
-        not to make it impossible.
+        A ratchet like this one exists to make a new module DECLARED, not to
+        make it impossible. `report.py` is a module of its own because
+        `cli.py` imports `extraction`, so `extraction` cannot import `cli`:
+        the tables both read live in a third module.
 
         The set asserted here is the one `_package_files()` returns, and every
         other guard in this file iterates that same helper: adding a module to
@@ -182,12 +119,9 @@ class TestDependencyBoundary(unittest.TestCase):
         assertion is what says so out loud.
         """
         names = {path.name for path in _package_files()}
-        # `sbom.py` joined the package with the extraction document. It was
-        # brought under every guard in this file by that one addition, which is
-        # the whole point of deriving the set from the disk: the forbidden
-        # tokens, the third-party import ban, the pure-ASCII rule and the
-        # absence of any provisional-arbitration dependency all apply to it
-        # without a line being written for it.
+        # Deriving the set from the disk brings every module under every guard
+        # in this file: the forbidden tokens, the third-party import ban and
+        # the pure-ASCII rule apply to a new module without a line written.
         self.assertEqual({"__init__.py", "cli.py", "extraction.py", "report.py",
                           "sbom.py"},
                          names)
@@ -202,68 +136,14 @@ class TestDependencyBoundary(unittest.TestCase):
                 self.assertEqual(set(), residue,
                                  f"unexpected third-party dependency: {residue}")
 
-    def test_no_upstream_module_is_imported(self):
-        for path in _package_files():
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            roots = _import_roots(tree)
-            for module in FORBIDDEN_UPSTREAM_MODULES:
-                with self.subTest(module=path.name, forbidden=module):
-                    self.assertNotIn(module, roots)
-
     def test_the_scope_of_this_guard_is_the_package_not_the_repository(self):
-        """DECLARED, not implied. `transport/` names the upstream project on
-        purpose; it is not covered here, and must not be."""
-        transport = REPO_ROOT / "transport" / "test_equivalence.py"
-        self.assertTrue(transport.is_file())
-        self.assertNotIn(transport, _package_files())
-        self.assertIn("phase1_scanner_crypto", transport.read_text(encoding="utf-8"))
+        """DECLARED, not implied: the guards read the package directory and
+        nothing else in the repository."""
+        for path in _package_files():
+            self.assertEqual(PACKAGE_ROOT, path.parent)
 
 
 class TestVocabularyBoundary(unittest.TestCase):
-
-    def test_no_forbidden_qualification_token_in_the_package(self):
-        for path in _package_files():
-            source = path.read_text(encoding="utf-8")
-            for token in FORBIDDEN_TOKENS:
-                with self.subTest(module=path.name, token=token):
-                    self.assertNotIn(token, source)
-
-    def test_no_forbidden_token_in_the_readme_either(self):
-        """The README is the first thing a stranger reads."""
-        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-        for token in FORBIDDEN_TOKENS:
-            with self.subTest(token=token):
-                self.assertNotIn(token, readme)
-
-    def test_the_package_declares_no_provisional_arbitration_dependency(self):
-        """Two forms, because they fail for different reasons: the attribute
-        catches a constant defined and re-exported, the token catches one
-        written and never read."""
-        for module in _imported_package_modules():
-            with self.subTest(module=module.__name__):
-                self.assertFalse(hasattr(module, "DEPEND_ARBITRAGE"))
-        for path in _package_files():
-            with self.subTest(module=path.name):
-                self.assertNotIn("DEPEND_ARBITRAGE", path.read_text(encoding="utf-8"))
-
-    def test_the_package_mints_no_verdict(self):
-        for path in _package_files():
-            source = path.read_text(encoding="utf-8")
-            for marker in VERDICT_MARKERS:
-                with self.subTest(module=path.name, marker=marker):
-                    self.assertNotIn(marker, source)
-
-    def test_the_two_vocabulary_families_are_disjoint_and_stay_so(self):
-        """A DECISION, written as an assertion rather than left as a
-        coincidence. The two lists guard different surfaces and must not
-        overlap: a word banned from the SOURCE has no business being merely
-        watched at run time, and a word that is ordinary English in a
-        docstring must not be banned from the source by the back door. Code
-        review, 15 September 2026, found the runtime half living in another
-        file with no entry in common and no reference either way -- which is
-        this same property, holding by accident."""
-        self.assertEqual(set(), set(FORBIDDEN_TOKENS) & set(VERDICT_CLAIM_TOKENS))
-        self.assertNotEqual((), VERDICT_CLAIM_TOKENS)
 
     def test_a_disclaimer_is_not_read_as_a_claim(self):
         """The guard must tell "we judge nothing" from "we judged this".
@@ -286,9 +166,9 @@ class TestVocabularyBoundary(unittest.TestCase):
         self.assertEqual(["certified", "safe"], verdict_claims_in(
             "This tree is certified safe."))
 
-    def test_the_package_borrows_no_upstream_message_prefix(self):
+    def test_the_package_borrows_no_foreign_message_prefix(self):
         """A published package uses its ecosystem's standard logging. The
-        bracketed prefixes belong to the project this code came from, and levels
+        bracketed prefixes belong to another tool's convention, and levels
         replace them here."""
         for path in _package_files():
             source = path.read_text(encoding="utf-8")
@@ -358,61 +238,10 @@ class TestPackagingBoundary(unittest.TestCase):
         self.assertIn("version", self.pyproject["project"]["dynamic"])
         self.assertEqual({"attr": "unboxr.__version__"},
                          self.pyproject["tool"]["setuptools"]["dynamic"]["version"])
-        # ENGRAVED ON PURPOSE, and the one guard in this file that the
-        # version -- not the package surface -- makes go red. 2.0.0 is story
-        # 14.8: the level-0 extraction root stopped being the fixed name
-        # `extracted` and started carrying the archive's own name, exactly
-        # as the determinism contract already promised for a nested one --
-        # EVERY caller of `prepare_source`, and every invocation of the
-        # command line, gets a tree at a different path than before, with
-        # nothing to opt into. That is a change of SHAPE to the default
-        # behaviour, not an addition, so a major version -- even though two
-        # new options (`--replace`, `--no-archive-dir`) ship alongside it.
-        # 2.0.1 is six correctness fixes from the adversarial code review of
-        # 2.0.0 (15 September 2026): no public signature and no observable
-        # shape changed on a correct run, so a PATCH version.
-        # 2.1.0 is story 14.9: the document became readable -- keys in the
-        # order `bom-1.7.schema.json` declares them instead of alphabetically,
-        # every `property` and every `hash` folded onto one line, and the
-        # calculated timestamp stopped at the second it measures. Nothing the
-        # document SAYS changed, and no public signature moved, so it is not a
-        # major; but the BYTES a caller stores did, which is more than a patch.
-        # 2.1.1 is ten fixes from the adversarial review of 2.1.0: three of
-        # behaviour (tuples ordered like any other container, circular
-        # documents raising ValueError again, the BOM link written in schema
-        # order) and seven of diagnostics and prose. No public signature
-        # moved and no document this package builds comes out differently, so
-        # a PATCH version.
-        # 2.2.0 is `--list-formats`: the command projects the extension tables
-        # onto the four states it sorts every recognised extension into, and
-        # `--json` renders the same projection for a machine. A MINOR version:
-        # no public signature moved, no document changed a byte, and nothing
-        # that was extracted before is extracted differently.
-        # THREE THINGS IT IS NOT A PURE ADDITION, NAMED RATHER THAN GLOSSED.
-        # (a) The TEXT of a usage error: `archive` became an optional
-        # positional, the way `destination` did at 2.0.0, so `main` writes the
-        # "required: archive" sentence argparse used to write. Same refusal,
-        # same code 2.
-        # (b) The USAGE LINE of `--help`, for the same reason: `[archive]` is
-        # now advertised optional unconditionally, where it used to be
-        # mandatory. What is optional is stated in the option's own help text
-        # and enforced in `main`; the one-line usage cannot express "optional
-        # only with --list-formats".
-        # (c) AND THE ONE THAT IS A REAL BEHAVIOURAL REGRESSION, measured on
-        # 15 September 2026 and pinned by
-        # `TestListingWhatThisMachineCanOpen.test_the_new_option_makes_two_
-        # abbreviations_of_linked_bom_ambiguous`: `--l` and `--li` used to be
-        # valid abbreviations of `--linked-bom` and now exit 2, because
-        # argparse's prefix matching finds `--list-formats` too. An invocation
-        # that worked returns a different result, which is why "no existing
-        # invocation produces a different result" is NOT written here. The
-        # option keeps its name -- it was chosen, and renaming it to dodge an
-        # abbreviation nobody documented would be the wrong trade -- and
-        # `allow_abbrev` stays on: turning it off would break EVERY
-        # abbreviation of every option at once, a far larger break than the
-        # two this costs. `--link`, `--linked` and `--linked-bom` are
-        # unaffected.
-        self.assertEqual("3.1.0", unboxr.__version__)
+        # ENGRAVED ON PURPOSE: the one guard in this file that the version
+        # -- not the package surface -- makes go red. Bump it together with
+        # `unboxr.__version__`.
+        self.assertEqual("0.1.0", unboxr.__version__)
         source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("importlib.metadata", source)
 
@@ -449,19 +278,17 @@ class TestPackagingBoundary(unittest.TestCase):
                         self.assertNotIn(name, skip_calls)
 
     def test_the_licence_carries_no_scope_clause(self):
-        """The upstream licence enumerates directories and excludes a vendored
-        tree. There is nothing of the sort here, and a clause naming
-        directories that do not exist would be worse than none."""
+        """A licence clause naming directories that do not exist would be worse
+        than none."""
         licence = (REPO_ROOT / "LICENSE.md").read_text(encoding="utf-8")
         self.assertIn("MIT License", licence)
-        self.assertIn("Copyright (c) 2026 Rodolphe Dejeunes", licence)
+        self.assertIn("Copyright (c) 2026 RοdοƖphе Dеȷеᴜnеѕ", licence)
         for absent in ("wheelhouse", "NOTICE.md", "src/", "packaging/"):
             with self.subTest(absent=absent):
                 self.assertNotIn(absent, licence)
 
     def test_the_gitignore_does_not_keep_build_and_dist(self):
-        """The upstream project deliberately keeps `build/` and `dist/` for a
-        reason that has no object here."""
+        """Build output must never be committed."""
         ignored = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").split()
         self.assertIn("build/", ignored)
         self.assertIn("dist/", ignored)

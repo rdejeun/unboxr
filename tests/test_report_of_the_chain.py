@@ -93,7 +93,7 @@ class TestTheReportIsReturned(_Bench):
     def test_the_report_is_a_named_field_and_not_a_fourth_tuple_slot(self):
         """"A report whose field cannot be omitted" reads literally: a field
         has a name. Three positional pieces already read badly; a fourth, and
-        the fifth a later story adds, would read worse."""
+        the fifth a later change adds, would read worse."""
         archive = self._zip_at(self.dir / "pkg.zip")
         prepared = ux.prepare_source(str(archive), workspace=self.dir / "ws")
 
@@ -576,7 +576,7 @@ class TestTheCapabilityProfileOfThisMachine(_Bench):
 
 
 # ---------------------------------------------------------------------------
-# What this story deliberately did NOT change
+# What the instrumentation deliberately did NOT change
 # ---------------------------------------------------------------------------
 class TestWhatThisInstrumentationDidNotChange(_Bench):
 
@@ -592,12 +592,12 @@ class TestWhatThisInstrumentationDidNotChange(_Bench):
         return calls
 
     def test_the_number_of_logging_sites_of_the_module_is_unchanged(self):
-        """This story moves information into a DATA structure. It does not take
+        """The report moves information into a DATA structure. It does not take
         it upon itself to double, or to remove, the messages already there --
         and a report that quietly changed how loud the chain is would be a
         second change hiding behind the first.
 
-        Story 14.8 (crypto-scan, upstream) is the one exception on record: it
+        The three extraction modes are the one exception on record: they
         gave level 0 its own provisional-name-then-rename dance, reused from
         `flatten_nested_archives` rather than reinvented, plus the removal of
         a URL's downloaded copy under `--no-archive-dir` -- five new sites,

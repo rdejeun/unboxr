@@ -7,18 +7,6 @@ you back a directory. Given a `.zip`, a `.tar.gz`, a `.whl`, an `.apk`, a
 `.deb`, a URL pointing at one of those, or a directory that already contains
 some, it produces one flat, fully-expanded tree.
 
-## What unboxr is not
-
-- **It renders no verdict.** It does not classify, score, rate or judge
-  anything it extracts. It has no notion of risk, quality or compliance.
-- **It says nothing about cryptography.** There is no analysis of the extracted
-  content at all. What you do with the tree is entirely your business.
-- **It has nothing to do with export control**, licensing, or any regulatory
-  regime.
-- **It is not a security scanner.** It applies the standard library's tar
-  security filter because extracting an archive should not write outside the
-  destination, and that is the whole of its ambition on that front.
-
 ## Install
 
 Requires **Python 3.12 or later** and nothing else. Version 3.12 is the floor
@@ -27,8 +15,10 @@ guaranteed from that release onwards. Requiring it removes every conditional
 code path: no capability probing, no degraded mode, one extraction behaviour.
 
 ```sh
-pip install .
+pip install unboxr
 ```
+
+From a clone of the source tree, `pip install .` does the same.
 
 ### Installing offline
 
@@ -131,9 +121,8 @@ when combined with an ARCHIVE, a DESTINATION, `--replace`, `--no-archive-dir`,
 an extraction took place. `-v` and `-q` are accepted and do nothing here. See
 *7-Zip is optional* below.
 
-Adding `--list-formats` cost two abbreviations: `--l` and `--li` used to reach
-`--linked-bom` and are now ambiguous, refused with code 2. `--lin` and
-anything longer are unaffected.
+`--l` and `--li` are ambiguous between `--linked-bom` and `--list-formats`
+and are refused with code 2. `--lin` and anything longer are unambiguous.
 
 This command line is deliberately a **floor**. It writes no document unless you
 ask for one, and it has no self-check gate, no strict mode and no verdict of
@@ -246,7 +235,7 @@ It holds one component per path:
 - every container that was **not opened**, with its cause -- code and English
   text, as two separate properties.
 
-The container you handed over is the exception, and it moved at 3.0: it is
+The container you handed over is the exception: it is
 `metadata.component`, the subject of the document, and it is **not** repeated
 among the components. Its digest and its anomaly, if it has one, are on the
 subject. Look for the input there, never in `components`.
@@ -272,8 +261,7 @@ worth making -- a detector's gap is neither.
 
 **No exclusion policy.** `unboxr` has none -- not `__pycache__`, not `.git`, not
 `node_modules`. Whether those belong in an analysed corpus is the consumer's
-policy, applied after extraction. Until 3.0 the document repeated that in a
-property of its own, on every document, always with the same value; a constant
+policy, applied after extraction. The document carries no property for it: a constant
 says nothing per document and belongs here.
 
 The library form returns a structure and writes nothing:
@@ -291,14 +279,13 @@ unboxr.write_document(document, Path("sbom.json"))
 which nothing happened carries none at all, and the `properties` key is absent
 rather than empty.
 
-That rule REVERSED in 3.0, and the reversal is the whole release. Until then
-every property was emitted on every component -- a cause code reading
-`no_entry`, seven hundred times over an ordinary archive -- because an omission would have
-read as *not applicable* rather than *not determined*. That reasoning holds
-under a positive-only oracle, where a silence cannot be told apart from an
-unasked question. It stops holding the moment the document promises that every
-anomaly it can observe is written: the omission then asserts something precise,
-*nothing abnormal happened to this path*, and writing it out adds nothing.
+Under a positive-only oracle an omission would read as *not applicable* rather
+than *not determined*, because a silence cannot be told apart from an unasked
+question. That reasoning does not apply here: the document promises that every
+anomaly it can observe is written, so the omission asserts something precise,
+*nothing abnormal happened to this path*, and writing it out -- a cause code
+reading `no_entry`, seven hundred times over an ordinary archive -- would add
+nothing.
 
 Native CycloneDX fields -- `hashes`, `type`, `name`, `metadata.tools` -- are
 used as they are and never wrapped in a property.
@@ -325,12 +312,11 @@ On a component, when something abnormal is true of it:
 Translate the **code**, never the text: the text comes from one table and is
 allowed to be reworded.
 
-**One invariant holds the place of a property that used to state it.** Every
+**One invariant holds the place of a digest-state property.** Every
 component carries either a digest, or an anomaly saying why it has none, or the
-type `data` for a path that is not file content. A digest-state property said
-this on every component until 3.0, including the ones whose digest was taken;
-what had to survive is that a component can never go silent about a missing
-digest.
+type `data` for a path that is not file content. There is no
+per-component digest-state property: what matters is that a component can
+never go silent about a missing digest.
 
 **`unboxr:parentContainer` is written in one case only.** A nested archive is
 flattened into a directory carrying its own name, so `outer.zip/inner.zip/a.c`
@@ -342,8 +328,7 @@ no parent and conclude there is **none**, turning *unknown* into a favourable
 answer. The property says `not_determinable` exactly there, and nowhere else.
 
 **Adding a property to the document is an addition to the contract** and raises
-the minor version. **Removing one raises the major**, which is what 3.0 did to
-fourteen of them.
+the minor version. **Removing one raises the major**.
 
 ### Which BOM this document belongs to
 
@@ -429,7 +414,7 @@ than one asserting none, so the check lives here: the URN is confronted with
 the pattern the schema declares for a BOM-Link to a document, and anything it
 does not recognise is refused rather than written.
 
-**Two runs of the same upstream chain carry two different URNs.** The document
+**Two runs of the same pipeline carry two different URNs.** The document
 you point at is given a fresh serial number every time it is generated, so a
 link recorded today and a link recorded tomorrow differ even when nothing else
 did. That does not weaken this document's own determinism: the URN is an
@@ -570,7 +555,7 @@ strictly local. There is no telemetry, no update check, and no index lookup.
    a stable cause **code**; its English text is derived from that code by one
    table, in `unboxr.report`, and never written a second time.
 
-   **Since 3.0 this covers every ANOMALY, not only amputations.** A destination
+   **This covers every ANOMALY, not only amputations.** A destination
    that already held content, an archive kept because it could not be removed,
    a container recognised by its bytes when its extension said nothing, a
    listed path whose digest could not be taken: none of those costs content,
@@ -593,12 +578,11 @@ version is enough, and so is one machine having it where the other has not.
 Promising byte-identity would make this contract false the first time that
 happened. Compare two documents on one machine, under one version of `unboxr`.
 
-**This is not narrower than it was, and it is not wider: it is elsewhere.**
-Before 3.0 the document wrote the machine's whole capability profile, so two
-machines that both had 7-Zip agreed whatever their versions, and two machines
-that differed disagreed even on an archive 7-Zip never touched. Now they agree
-on every run 7-Zip stayed out of, and disagree on the version whenever it took
-part. Which is the smaller divergence depends on what you extract.
+**The divergence is narrow, but it is not zero.** Two machines agree on every
+run 7-Zip stayed out of, and disagree on the version whenever it took part. The
+document does not write the machine's whole capability profile, which would
+make two machines that differ disagree even on an archive 7-Zip never
+touched. How much divergence you meet depends on what you extract.
 
 ### What the contract does not guarantee
 
@@ -608,9 +592,9 @@ part. Which is the smaller divergence depends on what you extract.
   `.venv`. That is your policy, applied after extraction.
 - **No guarantee on any document** you build downstream from the tree.
 - **No guarantee on the corpus when the 7-Zip binary is absent.**
-- **No guarantee that the tree matches what earlier versions produced**: the tar
-  security filter refuses archives they extracted. In exchange, the behaviour is
-  now stable from one Python release to the next.
+- **No guarantee that the tree matches what a tool without the tar security
+  filter produces**: the filter refuses archives such a tool would extract. In
+  exchange, the behaviour is stable from one Python release to the next.
 - **No guarantee on what the report says about content.** It names containers,
   what became of them, and the SHA-256 digest of each one that could still be
   read when it was filed. It opens nothing to look inside, it says nothing
@@ -642,10 +626,6 @@ python -m unittest discover -s tests -t tests
 The suite runs offline, with no network, no git, no 7-Zip binary and no
 versioned fixture: every archive it needs is built on the spot.
 
-`transport/` holds a separate suite that proves this code equivalent to the
-block it was carved out of. It needs a checkout of that project and disappears
-once the original is removed; see `transport/test_equivalence.py`.
-
 ## Licence
 
-MIT. See [LICENSE.md](LICENSE.md).
+MIT. See the `LICENSE.md` file shipped with the source distribution.

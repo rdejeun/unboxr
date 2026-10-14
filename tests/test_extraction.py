@@ -46,12 +46,10 @@ import unboxr.extraction as ux  # noqa: E402
 # module would hold nothing: it would follow the very regression it is meant to
 # catch.
 #
-# INHERITED COVERAGE GAP, DECLARED AND NOT CLOSED HERE: this literal freezes 47
-# entries of a table that has 68. The 21 later entries are held by the
-# equivalence proof in `transport/`, which compares the whole table against the
-# original -- keys AND values. Widening this literal to 68 would duplicate that
-# proof without adding anything, and would have to be rewritten the day the
-# upstream table legitimately grows.
+# COVERAGE GAP, DECLARED AND NOT CLOSED HERE: this literal freezes 47 entries
+# of a table that has 68. The 21 later entries are not pinned by value. Widening
+# this literal to 68 would have to be rewritten the day the table legitimately
+# grows.
 # ---------------------------------------------------------------------------
 CATEGORY_BY_EXT_ORIGIN = {
     ".zip": "zip", ".jar": "zip", ".whl": "zip", ".egg": "zip",
@@ -352,7 +350,7 @@ class TestZstandardRecognisedButRefused(_Bench):
 
         self.assertIn("WARNING", capture.levels)
         self.assertIn("nested.tar.zst", capture.messages)
-        # The `[EXPLOITATION]` marker of the upstream prefix is gone: the level
+        # The `[EXPLOITATION]` marker of the old message prefix is gone: the level
         # carries it now. What must NOT be lost is the amputation itself being
         # named, so a consumer can read an absent finding correctly.
         self.assertIn("NOT in the extracted tree", capture.messages)
@@ -533,11 +531,9 @@ class TestNonRegression(_Bench):
         """No category of the table may fall into the final fallback.
 
         CAUTION: this guard compares the VALUES of `CATEGORY_BY_EXT` against the
-        SOURCE of `extract_archive`. Both sides were translated together, so on
-        its own it would stay green while proving nothing about faithfulness to
-        the original. What really holds the table is the equivalence proof in
-        `transport/`. This test keeps its own, narrower value: it catches a
-        category added to the table and forgotten in the dispatch chain."""
+        SOURCE of `extract_archive`. It does not pin the table's contents; its
+        value is narrower: it catches a category added to the table and
+        forgotten in the dispatch chain."""
         import inspect
         source = inspect.getsource(ux.extract_archive)
         for category in set(ux.CATEGORY_BY_EXT.values()):
@@ -870,11 +866,10 @@ class TestTheProvisionalName(_Bench):
         `flatten_nested_archives` itself, but a second top-level extraction
         (`prepare_source`'s own `extract_archive` call) over a workspace where
         an earlier flattening pass already renamed a nested archive to its own
-        verbatim name (`archive.name`, AC-1). A raw, not-yet-opened tar member
+        verbatim name (`archive.name`). A raw, not-yet-opened tar member
         of that name can then land on a directory -- exactly the shape of
         collision `_extract_tar_with_checks`'s merge logic silently discarded
-        before this correction (measured in code review, story 14.2 of the
-        upstream project, crypto-scan)."""
+        before this correction (measured in code review)."""
         root = self._tree()
         self._zip_at(root / "pkg.zip", members=(("code/aes.c", "int a;"),))
         self._capture(ux.flatten_nested_archives, root)
@@ -908,7 +903,7 @@ class TestTheProvisionalName(_Bench):
         POSIX while raising on Windows for the identical precondition -- an
         explicit `final_dest.exists()` check makes both platforms declare the
         same way instead of one of them staying silent. Measured in code
-        review, story 14.2 of the upstream project, crypto-scan."""
+        review."""
         root = self._tree()
         archive = self._zip_at(root / "pkg.zip")
         real_unlink = Path.unlink
@@ -937,8 +932,7 @@ class TestTheProvisionalName(_Bench):
         """`archive.unlink()` raising `FileNotFoundError` -- external
         interference already removed it -- must not be treated like a real
         removal failure: nothing blocks completing the rename, and reporting
-        "the archive is kept" would be false. Measured in code review, story
-        14.2 of the upstream project, crypto-scan."""
+        "the archive is kept" would be false. Measured in code review."""
         root = self._tree()
         archive = self._zip_at(root / "pkg.zip")
         real_unlink = Path.unlink
@@ -960,14 +954,14 @@ class TestTheProvisionalName(_Bench):
 
 
 # ---------------------------------------------------------------------------
-# Level 0, story 14.8: the three modes `prepare_source` now offers, and the
+# Level 0: the three modes `prepare_source` now offers, and the
 # single point (`resolve_extraction_root`) that computes where each one lands
-# -- reused by `unboxr.cli` rather than recomputed there (AC-1.4).
+# -- reused by `unboxr.cli` rather than recomputed there.
 # ---------------------------------------------------------------------------
 class TestLevelZeroThreeModes(_Bench):
 
     def test_resolve_extraction_root_is_the_single_point_for_all_three_modes(self):
-        """AC-1.4. Touches no file system: a caller deciding where the tree
+        """One single point for all three modes. Touches no file system: a caller deciding where the tree
         will land must be able to ask before the archive, or even the
         destination, exists."""
         workspace = self.dir / "out"
@@ -980,7 +974,7 @@ class TestLevelZeroThreeModes(_Bench):
                          ux.resolve_extraction_root("toto.jar", workspace,
                                                     replace=True))
         # `replace=True` ignores `workspace` entirely -- consistent with
-        # `unboxr.cli` refusing DESTINATION alongside `--replace` (AC-3.2).
+        # `unboxr.cli` refusing DESTINATION alongside `--replace`.
         self.assertEqual(Path("toto.jar"),
                          ux.resolve_extraction_root("toto.jar", None,
                                                     replace=True))
@@ -998,7 +992,7 @@ class TestLevelZeroThreeModes(_Bench):
         self.assertEqual("toto.jar", ux.resolve_archive_name("toto.jar"))
 
     def test_the_default_mode_names_the_root_after_the_archive(self):
-        """AC-1: the retired `extracted` is gone, the root now carries the
+        """The retired `extracted` is gone, the root now carries the
         archive's own name, verbatim."""
         archive = self._zip("pkg.zip")
         prepared = ux.prepare_source(str(archive), workspace=self.dir / "out")
@@ -1007,7 +1001,7 @@ class TestLevelZeroThreeModes(_Bench):
         self.assertTrue((prepared.tree / "code" / "aes.c").is_file())
 
     def test_no_archive_dir_extracts_straight_into_the_workspace(self):
-        """AC-4.1: no wrapper directory, the tree IS the workspace itself."""
+        """No wrapper directory, the tree IS the workspace itself."""
         archive = self._zip("pkg.zip")
         workspace = self.dir / "out"
         prepared = ux.prepare_source(str(archive), workspace=workspace,
@@ -1017,9 +1011,9 @@ class TestLevelZeroThreeModes(_Bench):
         self.assertTrue((workspace / "code" / "aes.c").is_file())
 
     def test_replace_extracts_in_place_and_removes_the_archive(self):
-        """AC-3.1: the archive becomes its own directory, on the same path --
+        """The archive becomes its own directory, on the same path --
         exactly what `unboxr` already does to a nested archive, reused here
-        rather than reinvented (AC-5)."""
+        rather than reinvented."""
         archive = self._zip("pkg.zip")
 
         prepared = ux.prepare_source(str(archive), replace=True)
@@ -1031,7 +1025,7 @@ class TestLevelZeroThreeModes(_Bench):
                          "own extracted content")
 
     def test_replace_never_removes_the_archive_on_a_failed_extraction(self):
-        """AC-3.6, and the mutation-critical half of it: the archive is
+        """The mutation-critical half of the in-place mode: the archive is
         removed ONLY after a successful extraction. Reproduced BEFORE the
         correction existed by reading the code path -- `extract_archive`
         raises before `local_path.unlink()` is ever reached -- and validated
@@ -1046,7 +1040,7 @@ class TestLevelZeroThreeModes(_Bench):
                         "a failed extraction must leave the archive in place")
 
     def test_replace_falls_back_to_the_provisional_name_when_the_rename_fails(self):
-        """The SAME non-guarantee the nested case already carries (AC-5.4):
+        """The SAME non-guarantee the nested case already carries:
         the tree returned is the one ACTUALLY obtained, not the one that was
         intended, when the rename onto the archive's own vacated path fails."""
         archive = self._zip("pkg.zip")
@@ -1065,7 +1059,7 @@ class TestLevelZeroThreeModes(_Bench):
                          "was attempted")
 
     def test_a_url_under_the_default_mode_consumes_the_downloaded_copy(self):
-        """AC-5.2 (D-C): the destination the default mode targets IS, by
+        """The destination the default mode targets IS, by
         construction, the exact path `download_source` just wrote the
         archive to -- so it is consumed the same way a nested archive is,
         and DESTINATION ends up holding only the tree."""

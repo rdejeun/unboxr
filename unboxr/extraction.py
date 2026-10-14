@@ -75,7 +75,7 @@ the consumer.
    a stable cause CODE; its English text is derived from that code by one
    table, in `unboxr.report`, and never written a second time.
 
-   SINCE 3.0 THIS COVERS EVERY ANOMALY, not only amputations: a destination
+   THIS COVERS EVERY ANOMALY, not only amputations: a destination
    that already held content, an archive kept because it could not be removed,
    a container recognised by its bytes, a listed path whose digest could not be
    taken. None of those costs content and all are declared, because a corpus
@@ -97,13 +97,11 @@ enough. Promising byte-identity would make this contract false the first time
 that happened. Comparing two documents is something to do on one machine, under
 one version of this package.
 
-NOT NARROWER THAN IT WAS -- ELSEWHERE, and the first draft of this paragraph
-claimed "narrower" without measuring it. Before 3.0 the whole capability
-profile was written, so two machines that both had 7-Zip agreed whatever their
-versions, and two that differed disagreed even on an archive 7-Zip never
-touched. Now they agree on every run it stayed out of, and disagree on the
-version whenever it took part. Which divergence is smaller depends on the
-corpus, so neither word is owed.
+NARROW, BUT NOT ZERO. Two machines agree on every run 7-Zip stayed out of, and
+disagree on the version whenever it took part. Writing the whole capability
+profile instead would make two machines that differ disagree even on an archive
+7-Zip never touched. How much divergence is met depends on the corpus, so
+"narrower" is not claimed.
 
 Saying so is not pedantry: a reader who observed the stability and found the
 contract silent would conclude a promise that is not there.
@@ -123,7 +121,7 @@ WHAT THE CONTRACT DOES NOT GUARANTEE
   than written down anywhere as a figure that would drift.
 - No guarantee that the tree produced is identical to the one produced before
   the tar security filter was made mandatory: the filter refuses archives that
-  earlier versions extracted. In exchange the behaviour is now stable from one
+  an unfiltered extraction accepts. In exchange the behaviour is stable from one
   Python release to the next -- the filter being requested explicitly, the
   change of default in Python 3.14 has no effect here.
 - No guarantee on what the report says about CONTENT. It names containers and
@@ -150,7 +148,7 @@ WHAT THE CONTRACT DOES NOT GUARANTEE
   segment of its URL -- exactly as guarantee 2(a) already only inherits,
   never validates, the FINAL name of an archive nested at any deeper level;
   this extends that same non-guarantee down to level 0, the root the whole
-  tree grows from (story 14.8 of the upstream project, crypto-scan).
+  tree grows from.
 
 LOGGING
 -------
@@ -226,7 +224,7 @@ class UnsupportedFormatError(RuntimeError):
     three sites. The oracle reminder itself is unchanged only at the
     Zstandard site, where it already carried one; the two 7-Zip sites
     (missing binary, unsupported delegated format) gain the reminder sentence
-    here, they did not already have it. Corrected in code review, story 14.3:
+    here, they did not already have it. Corrected in code review:
     this docstring previously claimed the reminder, too, was unchanged
     everywhere.
     """
@@ -350,7 +348,7 @@ def _record(report, code: str, path, root=None, level=None, detail: str = "",
         report.record(code, text_path, level=level, detail=detail,
                       digest=digest, path_frame=frame)
     except Exception:       # see the section comment above `_reportable_path`
-        # RECONSIDERED in code review, story 14.3: narrowing this to `KeyError`
+        # RECONSIDERED in code review: narrowing this to `KeyError`
         # (the one documented case, an undeclared code) looked like a genuine
         # fix for a defect that hides real call-site bugs. It is not --
         # `tests/test_report_of_the_chain.py::test_recording_never_becomes_
@@ -416,8 +414,7 @@ CATEGORY_BY_EXT = {
     # --- plain compression of A SINGLE FILE, second batch ---
     #     The table handled ".gz" and ".lzma" alone, but neither ".xz" nor
     #     ".bz2", while ".tar.xz" and ".tar.bz2" were recognised: an
-    #     unintentional asymmetry, measured 19 August 2026 in the upstream
-    #     project (crypto-scan, story 05.0). Both formats are in the standard
+    #     unintentional asymmetry, measured 19 August 2026. Both formats are in the standard
     #     library (`lzma` and `bz2` modules) -- no dependency. ---
     ".xz": "plain_xz",
     ".bz2": "plain_bz2", ".bz": "plain_bz2",
@@ -427,8 +424,7 @@ CATEGORY_BY_EXT = {
     #     RECOGNITION was missing, no new extraction function is required. They
     #     are the raw material of any consumer -- a Ruby, NuGet, Android or Java
     #     package shipped as is was not opened at all, so its content never
-    #     reached the caller (measured 19 August 2026 in the upstream project,
-    #     crypto-scan, story 05.0). ---
+    #     reached the caller (measured 19 August 2026). ---
     ".apk": "zip", ".aar": "zip", ".war": "zip", ".ear": "zip", ".sar": "zip",
     ".nupkg": "zip", ".xpi": "zip", ".ipa": "zip", ".pyz": "zip", ".zipx": "zip",
     ".gem": "tar_plain",
@@ -467,16 +463,14 @@ SORTED_EXTENSIONS = sorted(CATEGORY_BY_EXT.keys(), key=len, reverse=True)
 # design precedent, two retired with a pointer rather than dropped outright
 # (a silently dropped reason is exactly the anti-pattern this module argues
 # against elsewhere):
-#   1. retired -- the upstream project's own recognised-extensions table never
-#      covered markup formats either, so excluding them here changed nothing
-#      that table already decided (see the upstream project, crypto-scan,
-#      story 05.0);
-#   2. retired -- excluding them protected an upstream coverage metric
-#      (EPIC-05) that has no object in a standalone package;
+#   1. retired -- the original recognised-extensions table never covered
+#      markup formats either, so excluding them here changed nothing that
+#      table already decided;
+#   2. retired -- excluding them protected a coverage metric that has no
+#      object in a standalone package;
 #   3. kept -- it mirrors a design precedent from a downstream consumer,
 #      ExtractCode, whose `default_kinds` set excludes the `docs` category
-#      (measured 19 August 2026 in the upstream project, crypto-scan,
-#      story 05.0).
+#      (measured 19 August 2026).
 # The generic reason underneath reason 3: an office container expands to
 # presentation markup and packaging parts, which is not the material a caller
 # asked to open.
@@ -492,7 +486,7 @@ SORTED_EXTENSIONS = sorted(CATEGORY_BY_EXT.keys(), key=len, reverse=True)
 # `prepare_source()`, and `categorize_archive()` has four callers of its own, so
 # no single injection point would make an override effective. Injecting on one
 # side only would make the refusal and the error message disagree, bringing back
-# a defect fixed 20 August 2026 in the upstream project. What stands here is an
+# a defect fixed 20 August 2026. What stands here is an
 # assumed default policy, reversible only by a change that would propagate the
 # parameter across five signatures and test both consumers together.
 NOT_EXTRACTED_EXTENSIONS = frozenset({
@@ -528,8 +522,8 @@ def is_url(text: str) -> bool:
 # Never infer "this file is not an archive" from it.
 #
 # The table does NOT try to cover `libmagic`: the gap is an order of magnitude
-# wide, and closing it is not an objective (measured 19 August 2026 in the
-# upstream project, crypto-scan, story 05.0). It covers the formats the chain
+# wide, and closing it is not an objective (measured 19 August 2026). It
+# covers the formats the chain
 # already handles, plus Zstandard, which it knows precisely how to REFUSE.
 ARCHIVE_SIGNATURES = (
     # ZIP -- APPNOTE.TXT, 4.3: local file header, end of central directory
@@ -577,8 +571,7 @@ def categorize_by_content(path: Path):
     by a transfer. As long as categorisation was purely extensional, those
     archives crossed `flatten_nested_archives()` without a word and their
     content was never handed to the caller, which then reported on content that
-    had never been read (measured in the upstream project, crypto-scan,
-    story 05.0).
+    had never been read (measured earlier).
 
     Returns `(category, "")` -- the empty string signals that no extension
     matched, which `_name_without_extension()` already knows how to read.
@@ -596,7 +589,7 @@ def categorize_by_content(path: Path):
         # bzip2 ALWAYS follows "BZh" with the compression level (1-9, informal
         # RFC of the format). Without this check, a file whose first three
         # bytes coincide with "BZh" by chance is categorised as an archive --
-        # measured in code review on 20 August 2026 in the upstream project, on
+        # measured in code review on 20 August 2026, on
         # a `.py` file that had nothing to do with bzip2.
         if signature == b"BZh" and not (b"1" <= header[3:4] <= b"9"):
             continue
@@ -612,8 +605,8 @@ def categorize_by_content(path: Path):
                 # `tarfile.is_tarfile()` can raise far more than `OSError` on a
                 # corrupt stream: the `gzip` module raises a BARE `EOFError`
                 # (not an `OSError` subclass) when the stream is cut before the
-                # end marker -- reproduced in code review on 20 August 2026 in
-                # the upstream project (crypto-scan, story 05.0): a truncated
+                # end marker -- reproduced in code review on 20 August 2026:
+                # a truncated
                 # gzip file crashed the whole of `flatten_nested_archives()`,
                 # which calls `is_archive()` with no `try/except` at all.
                 return CATEGORY_IF_NOT_A_TAR[category], ""
@@ -646,8 +639,7 @@ def categorize_archive(path: Path, *, report=None, root=None, level=None):
     """
     # (1) Exclusion policy, BEFORE any read. Without this step, step (3) would
     #     let the packaging parts of office documents into the corpus -- a
-    #     regression measured 19 August 2026 in the upstream project
-    #     (crypto-scan, story 05.0) on a minimal `.docx`.
+    #     regression measured 19 August 2026 on a minimal `.docx`.
     #     Comparison by `endswith`, NOT by `Path.suffix`: `Path.suffix` returns
     #     "" for a file named literally ".docx" (with no stem), which bypassed
     #     the policy -- measured in code review on 20 August 2026. Same style as
@@ -723,8 +715,8 @@ def download_source(url: str, dest_dir: Path) -> Path:
         ) from exc
     # REUSES `resolve_archive_name`, never reimplements it: the two computed
     # the same rule independently until code review on 15 September 2026 --
-    # exactly the kind of drift AC-1.4 (story 14.8) warns a name computed in
-    # two places will eventually suffer. `resolve_extraction_root`'s own
+    # exactly the kind of drift a name computed in two places will
+    # eventually suffer. `resolve_extraction_root`'s own
     # default-mode target depends on this name matching where the file is
     # actually written, for every URL under the default mode.
     file_name = resolve_archive_name(url)
@@ -766,8 +758,7 @@ def _extract_zip_with_checks(zip_path: Path, dest: Path) -> None:
 
 # --- Tar security filter -----------------------------------------------------
 #
-# A DECLARED DIVERGENCE from the transported original, and the reason it needs a
-# function of its own. `TarFile.extractall(filter="data")` refuses absolute
+# WHY THIS NEEDS A FUNCTION OF ITS OWN. `TarFile.extractall(filter="data")` refuses absolute
 # paths, links pointing outside the destination, and special files -- but as far
 # as the caller is concerned it refuses them in silence: the exception names the
 # member, nothing names the amputation. A refused tar is a container that was
@@ -777,7 +768,7 @@ def _extract_zip_with_checks(zip_path: Path, dest: Path) -> None:
 #
 # It refuses the ARCHIVE, not the member: `data_filter` raises, extraction
 # stops, and nothing of that archive is extracted. That is the behaviour the
-# determinism contract declares as NOT guaranteed to match earlier versions.
+# determinism contract declares as NOT guaranteed to match an unfiltered extraction.
 def _declaring_data_filter(member: tarfile.TarInfo, dest_path: str) -> tarfile.TarInfo | None:
     try:
         return tarfile.data_filter(member, dest_path)
@@ -836,8 +827,7 @@ def _extract_tar_with_checks(tar_path: Path, dest: Path, mode: str = "r:*",
                         # nested archive to a directory at this exact path,
                         # and this extraction's own raw member -- not yet
                         # opened -- now lands on that same name. Measured in
-                        # code review, story 14.2 of the upstream project,
-                        # crypto-scan.
+                        # code review.
                         try:
                             target_held_content = any(target.iterdir())
                         except OSError:
@@ -853,8 +843,8 @@ def _extract_tar_with_checks(tar_path: Path, dest: Path, mode: str = "r:*",
                             # tar's own reportable path. So there IS a file to
                             # hash, and it is `tar_path`, which the extraction
                             # above has not removed. Measured 13 September
-                            # 2026: the story that asked for this read the
-                            # recorded path as the directory.
+                            # 2026: the recorded path was read as the
+                            # directory.
                             _record(report,
                                     DIRECTORY_OF_A_DIFFERENT_ORIGIN_DISCARDED,
                                     location or tar_path,
@@ -880,7 +870,7 @@ def _extract_tar_with_checks(tar_path: Path, dest: Path, mode: str = "r:*",
             # the one entry already filed here. Left untagged, that fallback
             # always lands on the generic `EXTRACTION_FAILED` instead -- a
             # SECOND, contradictory entry for one container, counted twice by
-            # `amputation_count()`. Verified in code review, story 14.3.
+            # `amputation_count()`. Verified in code review.
             if moved_any:
                 logger.warning("%s: the extracted content could not be moved "
                                "into %s in full. That directory now holds an "
@@ -924,7 +914,7 @@ def _name_without_extension(path: Path, matched_ext: str) -> str:
 # Length of the digest kept for the provisional name. Sixteen hexadecimal
 # characters = 64 bits: the probability of a collision between two archives of
 # the same package is negligible next to that of a real archive name literally
-# carrying the shape produced here (a residual limit, recorded upstream).
+# carrying the shape produced here (a residual limit, accepted).
 PROVISIONAL_DIGEST_LENGTH = 16
 
 
@@ -954,8 +944,7 @@ def _provisional_extraction_name(archive: Path, root: Path, *, report=None,
     A digest of the POSIX relative path, not a counter or a temporary
     directory, because this name can stop being provisional (see the
     non-guarantees below) and must then still be deterministic. A positional
-    counter was tried and withdrawn for three measured defects -- see story
-    3.1 of the upstream project, crypto-scan.
+    counter was tried and withdrawn for three measured defects.
 
     The produced name is a valid path component on Windows and on Linux alike:
     digits, letters `a-f` and `_` only, none of `< > : " / \\ | ? *`.
@@ -996,7 +985,7 @@ def _provisional_name_at_level_zero(archive: Path) -> str:
     fire its `ARCHIVE_OUTSIDE_THE_ANALYSED_ROOT` branch, and its warning with
     it, on EVERY nominal run: a local archive is essentially never a child of
     the workspace it is about to populate. That would be exactly the noise
-    story 14.8 measured and refused to reintroduce.
+    that was measured and is deliberately not reintroduced.
 
     The relative path that DOES have a meaning at level 0 is the archive's
     own name, taken relative to its own immediate parent -- the one directory
@@ -1233,8 +1222,7 @@ def extract_tar_7z(path: Path, dest: Path, *, report=None,
         # Sort on the POSIX relative path, the same idiom as guarantee 1 of the
         # determinism contract: without it, the `.tar` retained -- and therefore
         # THE WHOLE EXTRACTED CORPUS -- depended on the file system enumeration
-        # order (measured in code review on 2 September 2026 in the upstream
-        # project, crypto-scan).
+        # order (measured in code review on 2 September 2026).
         found_tars = sorted(tmp_dir.rglob("*.tar"),
                             key=lambda c: c.relative_to(tmp_dir).as_posix())
         if not found_tars:
@@ -1301,9 +1289,8 @@ def extract_archive(archive_path: Path, dest: Path, *, report=None,
         # Recognised, and refused OUT LOUD. The message carries its cause
         # because how an absent finding reads downstream depends on it: a corpus
         # amputated without a trace reads as an empty one. See the positive-only
-        # oracle at the top of this module. This is NFR-13 of the upstream
-        # project (crypto-scan): a silent heuristic fallback is the anti-pattern
-        # this branch exists to avoid.
+        # oracle at the top of this module. A silent heuristic fallback is the
+        # anti-pattern this branch exists to avoid.
         raise UnsupportedFormatError(
             ZSTD_NOT_SUPPORTED,
             f"Zstandard archive recognised but not extractable: '{archive_path.name}'. "
@@ -1435,8 +1422,7 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
             # and writes the raw member in its place. That merge used to be
             # silent for this exact shape of collision; it is not any more --
             # see the warning there -- but it remains a REPLACEMENT, not a
-            # failure. Measured in code review, story 14.2 of the upstream
-            # project, crypto-scan.
+            # failure. Measured in code review.
             #
             # `is_dir()` first, and the read guarded: the path may exist and NOT
             # be a directory, in which case `iterdir()` raises -- and this check
@@ -1502,7 +1488,7 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
                 # below: reporting "the archive is kept" would be false, and
                 # skipping the rename would strand perfectly good content
                 # under its provisional name for no reason. Measured in code
-                # review, story 14.2 of the upstream project, crypto-scan.
+                # review.
                 pass
             except OSError as exc:
                 # Extraction above already succeeded: reporting this as an
@@ -1540,8 +1526,7 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
                 # raises `FileExistsError` on Windows, caught below. Checking
                 # first makes an already-occupied `final_dest` behave the
                 # same, declared, way on both platforms, rather than being
-                # silent on one of them. Measured in code review, story 14.2
-                # of the upstream project, crypto-scan.
+                # silent on one of them. Measured in code review.
                 if final_dest.exists():
                     raise OSError(f"a directory or file already exists at {final_dest}")
                 provisional_dest.rename(final_dest)
@@ -1587,7 +1572,7 @@ def _record_residual_archives(report, root: Path, attempted: set) -> None:
     once, when the depth bound is actually reached, and it is the one place
     that still needs to see files the main loop never got to (residual, more
     nested than the bound allows) -- which a purely incremental set could not
-    tell apart from files already seen. Measured in code review, story 14.3.
+    tell apart from files already seen. Measured in code review.
     """
     if report is None:
         return
@@ -1603,9 +1588,9 @@ def _record_residual_archives(report, root: Path, attempted: set) -> None:
             # closing pass has no per-level information left to give -- it is
             # exactly the case `ContainerRecord.level`'s own docstring
             # declares ("`None` where the chain has no level to give"), and
-            # reporting the bound in its place read as the archive's own
-            # nesting depth, which it is not. Verified in code review, story
-            # 14.3: was `max_depth` unconditionally, on every residual entry.
+            # reporting the bound in its place would read as the archive's own
+            # nesting depth, which it is not. The level is therefore `None`
+            # on every residual entry, never `max_depth`.
             # Residual archives are on disk at this instant -- that is what
             # being still unopened means -- so reading them here is still
             # recording DURING the extraction.
@@ -1690,7 +1675,7 @@ def resolve_distribution_nature(file_name: str, matched_extension: str | None) -
 
 # --- SHA-256 digest of the received input ------------------------------------
 #
-# 1 MiB, a block size TAKEN OVER from a packaging helper of the upstream project
+# 1 MiB, a block size TAKEN OVER from a packaging helper written earlier
 # whose comment carries the measurement that justifies it. It is NOT re-justified
 # here: no fresh measurement was made for this move, and inventing a motive would
 # pass a reuse off as a decision.
@@ -1721,15 +1706,14 @@ def _sha256_digest_of_file(path: Path) -> str:
     # Named `digest_bytes`, NOT `digest`: `_provisional_extraction_name` already
     # uses that name for a hash of a PATH, unrelated to a hash of CONTENT --
     # reusing the identifier would recreate exactly the confusion this module
-    # warns about (noted in code review on 7 September 2026 in the upstream
-    # project).
+    # warns about (noted in code review on 7 September 2026).
     #
     # Do not confuse this digest with a downstream tool's digest of what IT
     # produces from the extracted tree: this one condenses the RECEIVED INPUT,
     # before extraction; a consumer's own digest of its own output is a
     # different object, at a different point in the pipeline, and does not
-    # supersede this one (generalised from a distinction specific to the
-    # upstream project's second processing stage).
+    # supersede this one (generalised from a distinction specific to
+    # one consumer's second processing stage).
     digest_bytes = hashlib.sha256()
     with path.open("rb") as f:
         for block in iter(lambda: f.read(_HASHING_BLOCK_SIZE), b""):
@@ -1741,7 +1725,7 @@ def _sha256_digest_of_file(path: Path) -> str:
 # rather than the standard library. Named here, once, rather than as a
 # literal repeated at every site that needs the same count -- this project has
 # already paid for a second source of truth on an extension count more than
-# once (`NOT_EXTRACTED_EXTENSIONS`). Verified in code review, story 14.3.
+# once (`NOT_EXTRACTED_EXTENSIONS`). Verified in code review.
 CATEGORIES_NEEDING_SEVEN_ZIP = ("external_7zip", "tar_7z")
 
 # The `CATEGORY_BY_EXT` categories that are RECOGNISED AND REFUSED. The format
@@ -2068,7 +2052,7 @@ def resolve_extraction_root(source: str, workspace: Path | None, *,
                             no_archive_dir: bool = False) -> Path:
     """
     THE single point where `workspace`, an archive's name and the three modes
-    of story 14.8 combine into the directory the extracted tree will occupy.
+    (default, `replace`, `no_archive_dir`) combine into the directory the extracted tree will occupy.
     Both `prepare_source` (which extracts there) and `unboxr.cli` (which has
     to know this path BEFORE calling `prepare_source`, to refuse an unusable
     `--sbom` path or an already-occupied target before anything is written)
@@ -2083,7 +2067,7 @@ def resolve_extraction_root(source: str, workspace: Path | None, *,
     before this is ever reached.
     `no_archive_dir`: `workspace` itself, with no directory named after the
     archive created beneath it.
-    Neither: `workspace / <the archive's own name>` -- the default (AC-1).
+    Neither: `workspace / <the archive's own name>` -- the default.
 
     Touches no file system: `is_url` and a path split, nothing else. That is
     what lets `unboxr.cli` call it before the destination, or even the
@@ -2102,11 +2086,10 @@ def _extract_replacing_archive_with_its_own_content(
     Extract `local_path` under a provisional name, remove the archive, then
     rename the extraction onto the path the archive itself just vacated --
     EXACTLY the three-step dance `flatten_nested_archives` already performs
-    for a nested archive (story 14.8, AC-5), reused rather than reinvented.
+    for a nested archive, reused rather than reinvented.
 
     THE ONLY TWO CALLERS THAT NEED THIS AT LEVEL 0. `--replace`, where the
-    final path IS the archive's own path by definition (D-A/D-B of the
-    story); and a URL under the default mode, where the downloaded copy sits
+    final path IS the archive's own path by definition; and a URL under the default mode, where the downloaded copy sits
     at `workspace / resolve_archive_name(source)` -- the exact path the
     default mode's target already is, by construction, every single time
     (`download_source` writes it there). Neither is a pre-existing
@@ -2116,7 +2099,7 @@ def _extract_replacing_archive_with_its_own_content(
     A LOCAL archive without `--replace` is NEVER routed here: if its own
     parent happens to be the workspace, the target and the archive coincide
     by ACCIDENT of the caller's own arguments, not by construction, and that
-    case is refused upstream instead (`unboxr.cli`, AC-2 / AC-5.3) -- an
+    case is refused upstream instead (`unboxr.cli`) -- an
     archive the caller did not ask to consume is never silently deleted.
 
     Returns the path ACTUALLY obtained: the intended final path when the
@@ -2221,7 +2204,7 @@ def prepare_source(source: str, workspace: Path | None = None,
     `workspace` is the directory the archive is unpacked under; the tree
     returned is `resolve_extraction_root(source, workspace, replace=replace,
     no_archive_dir=no_archive_dir)` -- by default `workspace / <the archive's
-    own name, verbatim>` (story 14.8, AC-1). When `workspace` is not given, a
+    own name, verbatim>`. When `workspace` is not given, a
     temporary directory is created and NEVER removed -- the caller owns it. A
     caller that runs repeatedly should pass a workspace it manages itself.
 
@@ -2295,8 +2278,7 @@ def prepare_source(source: str, workspace: Path | None = None,
         # Tell "unrecognised" apart from "recognised but deliberately excluded":
         # without this hint, the message below contradicts the informational
         # record `categorize_archive()` has just emitted for an office container
-        # -- measured in code review on 20 August 2026 in the upstream project
-        # (crypto-scan, story 05.0).
+        # -- measured in code review on 20 August 2026.
         lowered_name = local_path.name.lower()
         exclusion_hint = ""
         if any(lowered_name.endswith(ext) for ext in NOT_EXTRACTED_EXTENSIONS):
@@ -2341,7 +2323,7 @@ def prepare_source(source: str, workspace: Path | None = None,
                                      no_archive_dir=no_archive_dir)
 
     # THE ARCHIVE OCCUPIES ITS OWN TARGET PATH, STRUCTURALLY, in exactly two
-    # cases (story 14.8, AC-5): `--replace` (`target` IS `local_path`, by
+    # cases: `--replace` (`target` IS `local_path`, by
     # definition of `resolve_extraction_root`), and a URL under the DEFAULT
     # mode (`download_source` wrote `local_path` at `workspace /
     # resolve_archive_name(source)`, which is what `target` already computes
@@ -2355,7 +2337,7 @@ def prepare_source(source: str, workspace: Path | None = None,
     # its own parent directory. There the collision is an ACCIDENT of the
     # caller's own arguments, not a structural certainty, and the archive was
     # never offered up to be consumed. `unboxr.cli` refuses that case
-    # upstream instead (AC-2 / AC-5.3) before `prepare_source` is ever
+    # upstream instead before `prepare_source` is ever
     # called; this function does not render it impossible for a direct
     # library call that bypassed the refusal -- consistent with the rest of
     # this function, which prescribes no usage error, being a library.
@@ -2420,7 +2402,7 @@ def prepare_source(source: str, workspace: Path | None = None,
         # the default mode where it IS `target`): consumed here too, so
         # `flatten_nested_archives` below never re-discovers it as a nested
         # archive of itself, and so `destination` ends up holding only the
-        # tree (story 14.8, D-C) even though there was no rename dance to
+        # tree even though there was no rename dance to
         # fold this into.
         if from_url and no_archive_dir:
             try:

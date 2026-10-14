@@ -86,7 +86,7 @@ ORACLE_REMINDER = (
 # must keep both: the aggregate is what a caller who missed the live warnings
 # (or who only ever reads the failure path, where `summarise` runs once, at
 # the end) is left with. Named here, not inlined twice, so the filter and the
-# emitter cannot drift apart. Verified in code review, story 14.3.
+# emitter cannot drift apart. Verified in code review.
 NOT_OPENED_LINE = "Not opened -- %s: %s"
 STILL_IN_TREE_LINE = "In the tree, elsewhere -- %s: %s"
 
@@ -118,10 +118,10 @@ class _QuietFilter(logging.Filter):
 # here, because a library that carried the sentences a command prints would
 # have to be reworded to reword a heading.
 #
-# LOOKED UP, NEVER DEFAULTED. A state added upstream and forgotten here raises
-# `KeyError` on the first run, loudly, at the top of the listing. A `.get()`
-# with a fallback heading would print that state under a made-up name, which is
-# how a listing starts lying about what it is showing.
+# LOOKED UP, NEVER DEFAULTED. A state added to the report and forgotten here
+# raises `KeyError` on the first run, loudly, at the top of the listing. A
+# `.get()` with a fallback heading would print that state under a made-up name,
+# which is how a listing starts lying about what it is showing.
 FORMAT_STATE_HEADINGS = {
     STATE_OPENED_BY_THE_STANDARD_LIBRARY: "Opened by the standard library",
     STATE_DELEGATED_TO_SEVEN_ZIP: "Delegated to an external 7-Zip binary",
@@ -401,7 +401,7 @@ def build_parser() -> argparse.ArgumentParser:
                "cannot be reported on.",
     )
     # OPTIONAL, AND DECIDED IN `main` RATHER THAN BY argparse -- on the
-    # exact pattern `destination` already follows since story 14.8. An
+    # exact pattern `destination` already follows. An
     # argparse action that prints and exits (the `--version` mechanism)
     # would also short-circuit a required positional, but it runs DURING
     # parsing, at the position the option occupies in `argv`: `--json
@@ -566,7 +566,7 @@ def _inventoried_tree(archive: str, destination: Path | None, *,
     nothing is extracted -- so the tree is the user's own directory. Anything
     else is unpacked, and the tree is wherever `resolve_extraction_root`
     says `prepare_source` will create it, in ANY of the three modes -- the
-    SAME function `prepare_source` itself calls (story 14.8, AC-1.4): two
+    SAME function `prepare_source` itself calls: two
     independent computations of that path is exactly how `EXTRACTED_TREE_NAME`
     and this function's own former `destination / EXTRACTED_TREE_NAME` used
     to stay in step only because the value never varied. A URL is never a
@@ -576,7 +576,7 @@ def _inventoried_tree(archive: str, destination: Path | None, *,
     the same discipline `_resolved` above applies to its own failure. Treating
     an unreadable `archive` as if it were an archive-style source would let
     the containment check below run against the WRONG tree, switching the
-    refusal off without saying so. Reviewed in story 14.4.
+    refusal off without saying so. Reviewed in code review.
     """
     if not is_url(archive):
         candidate = Path(archive)
@@ -593,23 +593,23 @@ def _inventoried_tree(archive: str, destination: Path | None, *,
 def check_extraction_target(parser, archive: str, destination: Path | None, *,
                             replace: bool, no_archive_dir: bool) -> None:
     """Refuse an already-occupied extraction target NOW, before anything runs
-    (story 14.8, AC-2).
+
 
     ONLY THE DEFAULT MODE IS CHECKED HERE. `--no-archive-dir` keeps its own,
     older rule -- DESTINATION must be empty or absent -- checked in `main`
-    where it always has been (AC-4.2). `--replace` has nothing to check here
+    where it always has been. `--replace` has nothing to check here
     at all: the archive occupying its own future path is not a collision to
-    refuse, it is the whole point of the option (AC-3.1), and
+    refuse, it is the whole point of the option, and
     `resolve_extraction_root` makes that path the archive's own by
     definition.
 
-    THE REFUSAL IS ON EXISTENCE, NOT ON BEING NON-EMPTY (AC-2.2) -- the
+    THE REFUSAL IS ON EXISTENCE, NOT ON BEING NON-EMPTY -- the
     opposite rule from `--no-archive-dir`, and deliberately so: at the level
     of the archive's own name, `unboxr` claims a name that belongs to nobody
     yet, not a directory it is willing to add to. DESTINATION itself may
-    hold other things (AC-2.4).
+    hold other things.
 
-    ONE SPECIAL CASE NAMES ITS OWN CAUSE (AC-5.3, AC-2.3): when what already
+    ONE SPECIAL CASE NAMES ITS OWN CAUSE: when what already
     holds that name IS the archive itself -- a local archive whose
     DESTINATION happens to be its own parent directory -- `--replace` is
     named as the way out, because it is the only one: nothing else changes
@@ -621,7 +621,8 @@ def check_extraction_target(parser, archive: str, destination: Path | None, *,
     # hard-coded `False`: the guard above already guarantees both are `False`
     # here, but stating that as a literal duplicates the guard's own
     # precondition -- exactly the kind of independent computation this
-    # story's AC-1.4 warns drifts silently the day the guard above changes.
+    # rule against computing that path twice warns drifts silently the day
+    # the guard above changes.
     # Code review, 15 September 2026.
     target = resolve_extraction_root(archive, destination, replace=replace,
                                      no_archive_dir=no_archive_dir)
@@ -660,13 +661,13 @@ def check_document_path(parser, archive: str, destination: Path | None,
     The refused perimeter is the TREE, never the whole destination:
     `<destination>/sbom.json`, beside the tree, stays allowed in the default
     mode -- under `--no-archive-dir` the tree IS the whole destination, so
-    nothing under it is left to stay allowed (AC-4.3). Comparison is on
+    nothing under it is left to stay allowed. Comparison is on
     RESOLVED paths, never on strings: two spellings of one path, or a link
     pointing into the tree, name the same target.
 
     TWO MORE TARGETS NAME SOMETHING THAT WOULD STOP EXISTING THE INSTANT THE
     DOCUMENT IS WRITTEN, for the same underlying reason as the tree itself,
-    and are refused here for it (review of story 14.4): the SOURCE ARCHIVE --
+    and are refused here for it (code review): the SOURCE ARCHIVE --
     a file whose content carries its own SHA-256 digest cannot also be the
     file holding a document that asserts that digest -- and the DESTINATION
     DIRECTORY itself, which the extraction is about to create and which would
@@ -705,8 +706,8 @@ def check_document_path(parser, archive: str, destination: Path | None,
                 f"file whose content carries its own SHA-256 digest does not "
                 f"exist")
 
-    # DESTINATION HAS NO VALUE UNDER `--replace` (AC-3.2 forbids it), so this
-    # refusal has no object there: the tree-containment check above already
+    # DESTINATION HAS NO VALUE UNDER `--replace` (the option forbids it), so
+    # this refusal has no object there: the tree-containment check above already
     # covers the equivalent case, since `tree` IS the archive's own path.
     if destination is not None:
         resolved_destination = _resolved(destination)
@@ -770,14 +771,13 @@ def summarise(report, logger: logging.Logger) -> None:
     # it as a library") but was missing here: the corpus GREW here, which is
     # not an amputation, so it stays outside `--quiet`'s guarantee -- but the
     # reference summary this function is meant to be a complete rendering of
-    # must still say it. Verified in code review, story 14.3.
+    # must still say it. Verified in code review.
     for entry in report.widened:
         logger.info("Recognised by content -- %s: %s", entry.path,
                     text_for(entry.code))
-    # `report.not_attested` is the fifth kind, added at 3.0. It was missing
-    # here on the day it arrived -- the SAME defect this function was already
-    # corrected for once, on `widened`, in story 14.3. A path whose content is
-    # not attested appeared in the extraction document and nowhere at all on
+    # `report.not_attested` is the fifth kind, and this function must list it
+    # as it lists `widened`. A path whose content is
+    # not attested would appear in the extraction document and nowhere at all on
     # the console, so a caller who reads the run rather than the document never
     # heard of it.
     for entry in report.not_attested:
@@ -820,7 +820,7 @@ def main(argv: list[str] | None = None) -> int:
         # successful-looking run as an extraction that happened. An option
         # ignored in silence makes someone believe in work that was never
         # done -- the same motive `check_linked_bom` acts on a few lines
-        # below, and the one the upstream project has already applied twice.
+        # below, and one already applied twice elsewhere in this module.
         #
         # THE WHOLE SHAPE OF AN EXTRACTION IS CHECKED, not just the
         # positionals: `--sbom` names a document this mode does not write
@@ -882,12 +882,12 @@ def main(argv: list[str] | None = None) -> int:
     check_linked_bom(parser, args.linked_bom, args.sbom)
 
     # DECIDABLE FROM argv ALONE, next: the shape of the invocation itself,
-    # before a single path on disk is looked at (story 14.8, AC-2/AC-3/AC-4).
+    # before a single path on disk is looked at.
     # `--replace` and `--no-archive-dir` being mutually exclusive is already
     # enforced by `build_parser`'s own argument group.
     if args.replace and args.destination is not None:
         parser.error("DESTINATION is not accepted with --replace: the "
-                     "archive is extracted in place, on its own path (AC-3.2)")
+                     "archive is extracted in place, on its own path")
     if not args.replace and args.destination is None:
         parser.error("the following arguments are required: destination "
                      "(omit it only together with --replace)")
@@ -895,12 +895,12 @@ def main(argv: list[str] | None = None) -> int:
     is_source_url = is_url(args.archive)
     if args.replace and is_source_url:
         parser.error("--replace is refused on a URL: there is no local "
-                     "file to replace (AC-3.3)")
+                     "file to replace")
 
     # A SOURCE THAT IS ALREADY A DIRECTORY has neither an archive to replace
     # nor a wrapper directory to omit: `prepare_source` extracts nothing on
-    # this branch (D-D). Both options are refused here, with their cause,
-    # rather than silently accepted and ignored (AC-3.4, AC-4.5).
+    # this branch. Both options are refused here, with their cause,
+    # rather than silently accepted and ignored.
     source_is_directory = False
     if not is_source_url:
         try:
@@ -917,8 +917,8 @@ def main(argv: list[str] | None = None) -> int:
     if destination is not None:
         if destination.exists() and not destination.is_dir():
             parser.error(f"destination is not a directory: {destination}")
-        # NON-EMPTY IS REFUSED ONLY UNDER `--no-archive-dir` (AC-4.2). The
-        # default mode drops this rule (AC-2.4): DESTINATION may hold other
+        # NON-EMPTY IS REFUSED ONLY UNDER `--no-archive-dir`. The
+        # default mode drops this rule: DESTINATION may hold other
         # things now that `unboxr` only claims a name inside it, not the
         # whole directory. `check_extraction_target`, below, checks THAT
         # name instead.
@@ -953,7 +953,7 @@ def main(argv: list[str] | None = None) -> int:
         # holds from before the failure (containers opened, amputations
         # already announced) would otherwise go unsaid, contradicting the
         # module docstring's own claim that the failure path can declare.
-        # Verified in code review, story 14.3.
+        # Verified in code review.
         summarise(report, logger)
         if report.amputation_count():
             logger.warning(ORACLE_REMINDER, report.amputation_count())

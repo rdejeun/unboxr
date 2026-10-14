@@ -65,10 +65,10 @@ class TestTheVocabularyOfCauses(unittest.TestCase):
         """A figure engraved in a test name never goes red, it lies.
         Twenty-two causes: 6 amputations already named by the command, 8
         declared non-amputations (the eighth,
-        `downloaded_copy_kept_alongside_the_tree`, added by story 14.8 of the
-        upstream project, crypto-scan), the corpus widening, and the 4 an
-        earlier story added -- two containers opened, two refusals for want
-        of a capability. The last three arrived with 3.0: they say a listed path
+        `downloaded_copy_kept_alongside_the_tree`, added with the
+        three extraction modes), the corpus widening, and the 4 an
+        earlier addition -- two containers opened, two refusals for want
+        of a capability. The last three say a listed path
         carries no digest and why, and they were the values of a
         `digestState` property until a document that reports only the
         abnormal stopped having a place for the fourth, "it was computed".
@@ -89,8 +89,8 @@ class TestTheVocabularyOfCauses(unittest.TestCase):
 
     def test_the_two_logging_tables_keep_their_cardinals(self):
         """Moved from the command, not rewritten: six amputations, eight
-        declared non-amputations (story 14.8 of the upstream project,
-        crypto-scan, added the eighth), one widening message."""
+        declared non-amputations (the eighth was added with the
+        three extraction modes), one widening message."""
         self.assertEqual(6, len(report.AMPUTATION_MESSAGES))
         self.assertEqual(8, len(report.NOT_AN_AMPUTATION))
         self.assertTrue(report.CORPUS_WIDENING_MESSAGE)
@@ -105,17 +105,16 @@ class TestTheVocabularyOfCauses(unittest.TestCase):
         """One table, inside unboxr, or the texts diverge by construction.
         Checked on the SOURCE of the other two modules: a copy made to spare an
         import is exactly the failure this forbids."""
-        # `sbom.py` JOINED THE LIST AT 3.0: it is the module that projects the
-        # codes onto a document, so it is the likeliest place for a second
-        # table of texts to appear -- and the story that merged the digest
-        # states into this vocabulary asked for the guard explicitly.
+        # `sbom.py` IS ON THE LIST: it is the module that projects the codes onto
+        # a document, so it is the likeliest place for a second table of
+        # texts to appear.
         for name in ("cli.py", "extraction.py", "sbom.py"):
             source = (PACKAGE_ROOT / name).read_text(encoding="utf-8")
             for code, text in report.CAUSE_TEXTS.items():
                 with self.subTest(module=name, code=code):
                     self.assertNotIn(text, source)
 
-    def test_no_upstream_message_prefix_enters_a_cause_text(self):
+    def test_no_bracketed_message_prefix_enters_a_cause_text(self):
         for text in report.CAUSE_TEXTS.values():
             for prefix in ("[INFO]", "[AVERTISSEMENT]", "[ERREUR]", "[DEBUG]",
                            "[EXPLOITATION]"):

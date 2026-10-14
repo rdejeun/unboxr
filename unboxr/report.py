@@ -163,8 +163,8 @@ DIRECTORY_OF_A_DIFFERENT_ORIGIN_DISCARDED = "directory_of_a_different_origin_dis
 ARCHIVE_OUTSIDE_THE_ANALYSED_ROOT = "archive_outside_the_analysed_root"
 FLATTENING_FINISHED_WITH_UNOPENED_ARCHIVES = "flattening_finished_with_unopened_archives"
 # A URL's downloaded copy, under `--no-archive-dir`, where the extraction
-# root IS the workspace it was written into: consumed after extraction (story
-# 14.8, D-C), and this is what is filed on the rare occasion that removal
+# root IS the workspace it was written into: consumed after extraction, and this
+# is what is filed on the rare occasion that removal
 # itself fails. Distinct from `ARCHIVE_KEPT_AFTER_SUCCESSFUL_EXTRACTION`: that
 # one names content left under a PROVISIONAL name, which does not exist on
 # this path -- there is no rename dance under `--no-archive-dir`, the
@@ -644,7 +644,7 @@ class ExtractionReport:
 
         Exposed so a caller about to pay for a full-file hash can skip it when
         the entry it would attach to is going to be discarded as a duplicate
-        anyway (`_record` in `extraction.py`, review of story 14.4: the same
+        anyway (`_record` in `extraction.py`, code review: the same
         office container or residual archive is re-examined at every
         flattening level, and hashing it again each time bought nothing but a
         digest `record()` was always going to throw away)."""
@@ -672,7 +672,7 @@ class PreparedSource:
     """What `prepare_source` hands back.
 
     NAMED FIELDS, not a tuple. The arity went from three pieces to four, and a
-    later story adds a fifth; three positional pieces already read poorly when
+    a later change adds a fifth; three positional pieces already read poorly when
     unpacked, four read worse. It is also the literal reading of "a report whose
     FIELD cannot be omitted" -- a field has a name.
 
