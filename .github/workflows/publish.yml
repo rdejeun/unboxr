@@ -1,0 +1,68 @@
+# Publishes unboxr to PyPI when a GitHub release is published.
+#
+# The release tag must be the bare version, "x.y.z" (no "v" prefix), and must
+# equal `__version__` in `unboxr/__init__.py`. A version uploaded to PyPI can
+# never be uploaded again, so any mismatch stops the workflow before upload.
+#
+# Authentication is PyPI Trusted Publishing: no token is stored anywhere. The
+# PyPI project must declare this repository, this workflow file and the
+# `pypi` environment as a trusted publisher.
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - run: uv run --no-project --python ${{ matrix.python }} --with pytest python -m pytest -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build
+      - name: Check the release tag against the package version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag '$TAG' is not of the form x.y.z"
+            exit 1
+          fi
+          if ! [ -f "dist/unboxr-$TAG.tar.gz" ] || ! [ -f "dist/unboxr-$TAG-py3-none-any.whl" ]; then
+            echo "::error::Release tag '$TAG' does not match __version__ in unboxr/__init__.py"
+            ls dist
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/unboxr/${{ github.event.release.tag_name }}/
+    # Only this job can request the OIDC token PyPI trusts; the jobs that run
+    # the tests and the build never hold it.
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v6
+      - run: uv publish
