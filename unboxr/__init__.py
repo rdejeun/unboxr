@@ -50,6 +50,7 @@ from .extraction import (
     new_report,
     prepare_source,
     probe_capability_profile,
+    ProgressEvent,
     resolve_archive_name,
     resolve_distribution_nature,
     resolve_extraction_root,
@@ -145,6 +146,8 @@ __all__ = [
     "flatten_nested_archives",
     # End-to-end entry point
     "prepare_source",
+    # What `prepare_source` hands its optional `progress` callable
+    "ProgressEvent",
     "resolve_archive_name",
     "resolve_distribution_nature",
     "resolve_extraction_root",

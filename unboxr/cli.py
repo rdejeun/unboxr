@@ -41,6 +41,12 @@ frequent amputation of all -- an office container being refused -- is emitted at
 the INFORMATIONAL level. That filter reads the format strings from
 `unboxr.report`, the table's one home, never from a copy.
 
+THE PROGRESS LINE FOLLOWS THE SAME RULE. It is drawn from the `ProgressEvent`s
+`prepare_source` hands a callable, never from the records the library logs,
+and it is drawn only for a person watching a terminal: in a pipe, a file or
+under `--quiet`, stderr carries exactly what it carried before the line
+existed.
+
 This module is the ONLY place in the package that configures logging, and the
 only place that writes a file the caller asked for. The library never does
 either (see `unboxr/__init__.py`): `unboxr.sbom` RETURNS a structure, and the
@@ -50,10 +56,16 @@ writing is a separate gesture, taken here.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
+import os
+import shutil
 import sys
 import textwrap
+import threading
+import time
+import unicodedata
 from pathlib import Path
 
 from . import __version__
@@ -725,18 +737,420 @@ def check_document_path(parser, archive: str, destination: Path | None,
         parser.error(f"--sbom parent is not a directory: {parent}")
 
 
-def configure_logging(verbose: bool, quiet: bool) -> None:
-    """Set up logging for the command line, and only for it."""
+# --- The progress line --------------------------------------------------------
+#
+# ONE LINE, REWRITTEN IN PLACE at the bottom of stderr while `prepare_source`
+# runs, and gone before the first word of the summary. It is fed by the
+# `progress` callable the library offers -- never by reading logging records,
+# the pattern this module's docstring explains it has retired.
+#
+# SHOWN ONLY TO A PERSON. stderr must be a terminal, `--quiet` must be off, and
+# `TERM` must not be "dumb". Anywhere else -- a pipe, a file, a CI log -- not one
+# byte of it is written, and stderr is what it was before the line existed.
+#
+# NO ESCAPE SEQUENCE OF ANY KIND. The line is rewritten with a carriage return
+# and padded with spaces, and it is cut one column short of the terminal width
+# so that the terminal never wraps it: a wrapped line can no longer be reached
+# by `\r` alone. That is what lets it work in a legacy Windows console without
+# switching on virtual-terminal processing.
+#
+# NO PERCENTAGE. The total of a run is discovered level by level, so the bar
+# only ever counts the archives found at the CURRENT level; a phase that is one
+# opaque step (a download, a digest, a search, one extraction) gets a spinner.
+
+# The source stays pure ASCII: every glyph is written as an escape.
+_UNICODE_GLYPHS = {
+    "spinner": "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f",
+    "full": "\u2588",
+    "empty": "\u2591",
+    "ellipsis": "\u2026",
+}
+_ASCII_GLYPHS = {
+    "spinner": "|/-\\",
+    "full": "#",
+    "empty": "-",
+    "ellipsis": "...",
+}
+_BAR_CELLS = 12
+_TICK_SECONDS = 0.1
+_SEVEN_ZIP_MARKER = " (7-Zip)"
+
+
+def _status_line_wanted(stream, quiet: bool, environ) -> bool:
+    """Whether the progress line is drawn at all. No option turns it on."""
+    if quiet or environ.get("TERM") == "dumb":
+        return False
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, ValueError, OSError):
+        # No `isatty`, or a closed stream: not a terminal anyone is watching.
+        return False
+
+
+def _glyphs_for(stream, environ, os_name: str) -> dict:
+    """Unicode glyphs where they will be drawn, ASCII everywhere else.
+
+    THE ENCODING ALONE IS NOT ENOUGH. On Windows, Python hands the console a
+    UTF-8 stream whatever the console can draw, and the legacy console host
+    draws a braille spinner as boxes. Windows Terminal announces itself with
+    `WT_SESSION`; without it, ASCII. The Linux virtual console (`TERM=linux`)
+    is in the same case: its font has neither braille nor block glyphs.
+    """
+    if os_name == "nt" and "WT_SESSION" not in environ:
+        return _ASCII_GLYPHS
+    if environ.get("TERM") == "linux":
+        return _ASCII_GLYPHS
+    encoding = getattr(stream, "encoding", None)
+    if not encoding:
+        return _ASCII_GLYPHS
+    try:
+        "".join(_UNICODE_GLYPHS.values()).encode(encoding, errors="strict")
+    except (UnicodeEncodeError, LookupError):
+        return _ASCII_GLYPHS
+    return _UNICODE_GLYPHS
+
+
+def _terminal_width(stream) -> int:
+    """The width of the terminal `stream` writes to.
+
+    The stream's own descriptor first: `shutil.get_terminal_size` asks STDOUT,
+    which is redirected precisely when stdout carries the tree path to another
+    program while stderr stays on the terminal.
+    """
+    try:
+        columns = os.get_terminal_size(stream.fileno()).columns
+    except (AttributeError, ValueError, OSError):
+        columns = shutil.get_terminal_size().columns
+    return columns if columns > 0 else 80
+
+
+def _char_columns(char: str) -> int:
+    if unicodedata.combining(char):
+        return 0
+    # AMBIGUOUS WIDTH ("A") COUNTS AS TWO, deliberately: a terminal set up for
+    # East Asian text draws those characters on two columns, and nothing here
+    # can ask which kind it is. A line one column too short costs nothing; a
+    # line one column too long wraps, and cannot be rewritten any more.
+    return 2 if unicodedata.east_asian_width(char) in ("W", "F", "A") else 1
+
+
+def _columns(text: str) -> int:
+    """Terminal columns, not characters: a CJK name takes two per character,
+    and counting one would let the line wrap."""
+    return sum(_char_columns(char) for char in text)
+
+
+def _cut_left(text: str, budget: int, ellipsis: str) -> str:
+    """Keep the END of `text` within `budget` columns: of a path, the end is
+    the part that says which archive it is."""
+    if _columns(text) <= budget:
+        return text
+    room = budget - _columns(ellipsis)
+    if room <= 0:
+        return ""
+    kept, used = [], 0
+    for char in reversed(text):
+        width = _char_columns(char)
+        if used + width > room:
+            break
+        kept.append(char)
+        used += width
+    return ellipsis + "".join(reversed(kept))
+
+
+def _cut_right(text: str, budget: int) -> str:
+    kept, used = [], 0
+    for char in text:
+        width = _char_columns(char)
+        if used + width > budget:
+            break
+        kept.append(char)
+        used += width
+    return "".join(kept)
+
+
+def _printable(text: str) -> str:
+    """A name from an archive may hold a newline or a tab; either would break
+    the one line this has to stay on. Escaped, visibly, never dropped."""
+    return "".join(char if char.isprintable()
+                   else char.encode("unicode_escape").decode("ascii")
+                   for char in text)
+
+
+def _elapsed_text(seconds: float) -> str:
+    total = max(0, int(seconds))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _render_status(event, elapsed: float, frame: int, width: int,
+                   glyphs: dict, encoding: str | None = None) -> str:
+    """The text of the line, at most `width - 1` columns, padding excluded."""
+    spinner = glyphs["spinner"][frame % len(glyphs["spinner"])]
+    path = _printable(codec_safe(event.path, encoding))
+    marker = _SEVEN_ZIP_MARKER if event.seven_zip else ""
+    if event.phase == "nested":
+        total = max(event.total, 1)
+        # Archives DONE, not the one in hand: the bar fills as each one ends.
+        done = max(0, min(event.index - 1, total))
+        # Half a bar on a narrow terminal, which leaves the path some room.
+        cells = _BAR_CELLS if width >= 60 else _BAR_CELLS // 2
+        filled = done * cells // total
+        bar = glyphs["full"] * filled + glyphs["empty"] * (cells - filled)
+        head = (f"{spinner} level {event.level} [{bar}] "
+                f"{event.index}/{event.total}  ")
+    elif event.phase == "input":
+        head = f"{spinner} extracting "
+    elif event.phase == "download":
+        head = f"{spinner} downloading "
+    elif event.phase == "digest":
+        head, path = f"{spinner} hashing input", ""
+    elif event.phase == "scan":
+        head = f"{spinner} level {event.level}: looking for nested archives"
+        path = ""
+    else:
+        # A phase this rendering does not know yet is NAMED, not hidden.
+        head = f"{spinner} {_printable(event.phase)} "
+    limit = width - 1
+    # THE CLOCK IS KEPT LONGEST: it is what says the run is still alive. The
+    # path gives way first, from its left; then the words, from their right;
+    # then the 7-Zip marker. The clock itself is shown whole or not at all --
+    # "00:0" would read as a time.
+    clock = _elapsed_text(elapsed)
+    tail = f"{marker}  {clock}"
+    if _columns(tail) > limit:
+        tail = f"  {clock}"
+    if _columns(tail) > limit:
+        tail = clock if _columns(clock) <= limit else ""
+    room = limit - _columns(tail)
+    ellipsis = glyphs["ellipsis"]
+    if path:
+        path = _cut_left(path, room - _columns(head), ellipsis)
+    body = head + path
+    if _columns(body) > room:
+        body = (_cut_right(body, room - _columns(ellipsis)) + ellipsis
+                if room > _columns(ellipsis) else "")
+    # The last word, whatever the width: nothing may reach the last column.
+    return _cut_right(body + tail, max(0, limit))
+
+
+class _StatusLine:
+    """The line itself: what it shows, and the one lock every write takes.
+
+    The lock is SHARED with the logging handler below. A record and a redraw
+    of the line both write to stderr, from two threads; without the lock, a
+    record could land in the middle of the line.
+
+    A FAILING STREAM SWITCHES THE LINE OFF, and nothing else. A display that
+    could not be written is no reason to stop an extraction: the line goes
+    quiet, and the run, its records and its summary carry on.
+    """
+
+    # How long `stop` waits for the ticker, then for the lock, in seconds.
+    stop_timeout = 1.0
+
+    def __init__(self, stream, *, glyphs: dict, width=None,
+                 clock=time.monotonic) -> None:
+        self._stream = stream
+        self._glyphs = glyphs
+        self._width = width if width is not None else (
+            lambda: _terminal_width(stream))
+        self._clock = clock
+        self._encoding = getattr(stream, "encoding", None)
+        self._started_at = clock()
+        self._event = None
+        self._frame = 0
+        self._drawn = False
+        self.broken = False
+        self.lock = threading.RLock()
+        self._stopping = threading.Event()
+        self._ticker = None
+
+    def start_ticker(self, interval: float = _TICK_SECONDS) -> None:
+        """Turn the spinner and the clock while a phase gives no news."""
+        self._ticker = threading.Thread(target=self._tick_until_stopped,
+                                        args=(interval,),
+                                        name="unboxr-progress", daemon=True)
+        self._ticker.start()
+
+    def _tick_until_stopped(self, interval: float) -> None:
+        while not self._stopping.wait(interval):
+            self.tick()
+
+    def update(self, event) -> None:
+        """The `progress` callable handed to `prepare_source`."""
+        with self.lock:
+            self._event = event
+            self._draw()
+
+    def tick(self) -> None:
+        with self.lock:
+            self._frame += 1
+            self._draw()
+
+    def clear(self) -> None:
+        """Leave the cursor at the start of an empty line.
+
+        On a line that has gone broken, whatever it last put on the screen
+        cannot be erased any more; it is closed with a newline instead, so the
+        next record does not land glued to it.
+        """
+        with self.lock:
+            if not self._drawn:
+                return
+            if not self.broken:
+                try:
+                    blank = " " * max(0, self._width() - 1)
+                except Exception:
+                    self.broken = True
+                else:
+                    if self._write("\r" + blank + "\r"):
+                        self._drawn = False
+                        return
+            self._abandon()
+
+    def redraw(self) -> None:
+        with self.lock:
+            self._draw()
+
+    def stop(self) -> None:
+        """Stop the clock and leave the line blank, the cursor at its start.
+
+        BOUNDED, BOTH WAYS. A ticker stuck in a write on a stalled terminal
+        (Ctrl-S) is a daemon and holds the lock: waiting for either would hold
+        the end of the run hostage, so after `stop_timeout` the line is given
+        up and left as it is.
+        """
+        self._stopping.set()
+        if self._ticker is not None:
+            self._ticker.join(timeout=self.stop_timeout)
+        if not self.lock.acquire(timeout=self.stop_timeout):
+            self.broken = True
+            return
+        try:
+            self.clear()
+            self._event = None
+        finally:
+            self.lock.release()
+
+    def _draw(self) -> None:
+        if self.broken or self._event is None:
+            return
+        try:
+            width = self._width()
+            text = _render_status(self._event,
+                                  self._clock() - self._started_at,
+                                  self._frame, width, self._glyphs,
+                                  self._encoding)
+            # Padded to the full width: a shorter line must blank the longer
+            # one it replaces, and `\r` alone moves the cursor without erasing.
+            padding = " " * max(0, width - 1 - _columns(text))
+        except Exception:
+            # A fault in the DISPLAY is never a fault of the extraction. This
+            # runs inside `prepare_source`, through the `progress` callable,
+            # and an exception here would end the run for a progress line.
+            self.broken = True
+            return
+        # Counted as drawn BEFORE the write: part of it may reach the screen
+        # even when the write, or the flush after it, raises.
+        self._drawn = True
+        self._write("\r" + text + padding)
+
+    def _abandon(self) -> None:
+        """Close whatever a broken line left on the screen, best effort."""
+        self._drawn = False
+        try:
+            self._stream.write("\n")
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def _write(self, text: str) -> bool:
+        try:
+            self._stream.write(text)
+            self._stream.flush()
+        except (OSError, ValueError):
+            # `ValueError` covers a closed stream and an encoding refusal
+            # (`UnicodeEncodeError` is one).
+            self.broken = True
+            return False
+        return True
+
+
+class _ProgressAwareHandler(logging.StreamHandler):
+    """A `StreamHandler` that steps around the progress line.
+
+    With no line attached it IS a `StreamHandler`, byte for byte. With one, a
+    record clears the line, is written on a line of its own, and the line is
+    drawn again under it -- all under the line's lock.
+    """
+
+    status_line: _StatusLine | None = None
+
+    def emit(self, record: logging.LogRecord) -> None:
+        line = self.status_line
+        if line is None:
+            super().emit(record)
+            return
+        # A BROKEN line still goes through `clear`: it is what closes a
+        # leftover with a newline, once, before this record is written.
+        with line.lock:
+            line.clear()
+            super().emit(record)
+            line.redraw()
+
+
+@contextlib.contextmanager
+def _progress_line(handler: _ProgressAwareHandler, quiet: bool, *,
+                   environ=None, os_name: str | None = None, width=None,
+                   clock=time.monotonic, ticker: bool = True):
+    """Yield the `progress` callable for one run, or `None` when no line is due.
+
+    The line is stopped and cleared on the way out, WHATEVER the way out --
+    an exception and a Ctrl-C included -- so that the first record after it
+    starts on a blank line.
+
+    Everything after `quiet` exists for the tests: the environment, the
+    platform, the width and the clock are what decide the line, and none of
+    them is a command-line option.
+    """
+    environ = os.environ if environ is None else environ
+    os_name = os.name if os_name is None else os_name
+    stream = handler.stream
+    if not _status_line_wanted(stream, quiet, environ):
+        yield None
+        return
+    line = _StatusLine(stream, glyphs=_glyphs_for(stream, environ, os_name),
+                       width=width, clock=clock)
+    handler.status_line = line
+    if ticker:
+        line.start_ticker()
+    try:
+        yield line.update
+    finally:
+        line.stop()
+        handler.status_line = None
+
+
+def configure_logging(verbose: bool, quiet: bool) -> _ProgressAwareHandler:
+    """Set up logging for the command line, and only for it.
+
+    Returns the handler, which the progress line has to step around.
+    """
     package_logger = logging.getLogger("unboxr")
     package_logger.setLevel(logging.DEBUG if verbose else logging.INFO)
 
-    handler = logging.StreamHandler(stream=sys.stderr)
+    handler = _ProgressAwareHandler(stream=sys.stderr)
     handler.setLevel(logging.DEBUG if verbose else logging.INFO)
     handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
 
     if quiet:
         handler.addFilter(_QuietFilter())
     package_logger.addHandler(handler)
+    return handler
 
 
 def summarise(report, logger: logging.Logger) -> None:
@@ -933,7 +1347,7 @@ def main(argv: list[str] | None = None) -> int:
     check_document_path(parser, args.archive, destination, args.sbom,
                         replace=args.replace, no_archive_dir=args.no_archive_dir)
 
-    configure_logging(args.verbose, args.quiet)
+    handler = configure_logging(args.verbose, args.quiet)
     logger = logging.getLogger("unboxr.cli")
 
     # THE REPORT IS CREATED HERE, BEFORE THE RUN, AND HELD ACROSS IT. That is
@@ -942,10 +1356,15 @@ def main(argv: list[str] | None = None) -> int:
     # the failure would go with it.
     report = new_report()
 
+    # THE LINE IS GONE BEFORE ANY OF WHAT FOLLOWS IS SAID. The `with` closes
+    # before the `except` below runs, so an error, the summary and the tree
+    # path all start on a blank line -- on a failure and a Ctrl-C as well.
     try:
-        prepared = prepare_source(args.archive, workspace=destination,
-                                  report=report, replace=args.replace,
-                                  no_archive_dir=args.no_archive_dir)
+        with _progress_line(handler, args.quiet) as progress:
+            prepared = prepare_source(args.archive, workspace=destination,
+                                      report=report, replace=args.replace,
+                                      no_archive_dir=args.no_archive_dir,
+                                      progress=progress)
     except Exception as exc:
         logger.error("%s: %s", exc.__class__.__name__, exc)
         # `summarise` too, on this path, not just the numeric reminder: this

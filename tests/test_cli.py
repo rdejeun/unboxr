@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import functools
 import io
 import json
 import logging
@@ -28,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import tomllib
 import unittest
 import zipfile
@@ -290,7 +292,7 @@ class TestExtractionThroughTheCommand(_CommandBench):
         seen = {}
 
         def fake_prepare(source, workspace=None, report=None, replace=False,
-                         no_archive_dir=False):
+                         no_archive_dir=False, progress=None):
             seen["source"] = source
             seen["workspace"] = workspace
             seen["report"] = report
@@ -1317,6 +1319,560 @@ class TestTheProjectionClassifiesByPositiveLists(unittest.TestCase):
             with self.assertRaises(extraction.UnclassifiedCategoryError) as raised:
                 extraction.project_format_support()
         self.assertIn(".zip", str(raised.exception))
+
+
+
+# ---------------------------------------------------------------------------
+# The progress line: one line rewritten in place, for a person at a terminal
+# ---------------------------------------------------------------------------
+class _FakeTerminal(io.StringIO):
+    """A stream that says it is a terminal, with the codec a terminal has.
+
+    `io.StringIO` answers `isatty()` with False and carries no encoding, which
+    is exactly why every other test in this file sees no progress line.
+    """
+
+    def __init__(self, encoding: str = "utf-8"):
+        super().__init__()
+        self._encoding = encoding
+
+    @property
+    def encoding(self):
+        return self._encoding
+
+    def isatty(self):
+        if self.closed:
+            raise ValueError("I/O operation on closed file")
+        return True
+
+
+class _LineRefusingTerminal(_FakeTerminal):
+    """A terminal that fails every write starting with a carriage return --
+    the progress line's -- and lets everything else, records included, through.
+    """
+
+    def write(self, text):
+        if text.startswith("\r"):
+            raise OSError("the console went away")
+        return super().write(text)
+
+
+class _FailsAfterFirstDraw(_FakeTerminal):
+    """A terminal that accepts the first draw of the line, then fails every
+    later one: the first draw stays on the screen, and nothing can erase it."""
+
+    def __init__(self):
+        super().__init__()
+        self.draws = 0
+
+    def write(self, text):
+        if text.startswith("\r"):
+            self.draws += 1
+            if self.draws > 1:
+                raise OSError("the console went away")
+        return super().write(text)
+
+
+class _FlushFailsOnce(_FakeTerminal):
+    """A terminal whose first flush fails -- after the text has landed."""
+
+    def __init__(self):
+        super().__init__()
+        self.failed = False
+
+    def flush(self):
+        if not self.failed:
+            self.failed = True
+            raise OSError("the console went away")
+        return super().flush()
+
+
+def _screen(text: str) -> list[str]:
+    """What a terminal shows once `text` has been written to it.
+
+    A carriage return moves the cursor to the start of the line WITHOUT
+    erasing it, so a shorter text written over a longer one leaves the end of
+    the longer one visible. Asserting on the raw stream would miss exactly
+    that; replaying it here does not.
+    """
+    lines, current, column = [], [], 0
+    for char in text:
+        if char == "\r":
+            column = 0
+        elif char == "\n":
+            lines.append("".join(current).rstrip())
+            current, column = [], 0
+        else:
+            if column < len(current):
+                current[column] = char
+            else:
+                current.append(char)
+            column += 1
+    lines.append("".join(current).rstrip())
+    return lines
+
+
+def _line_writes(text: str) -> list[str]:
+    """Every write of the progress line: what follows a carriage return up to
+    the next one, when no newline intervenes (a record always ends with one)."""
+    return [segment for segment in text.split("\r")[1:] if "\n" not in segment]
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def _nested_zip(path: Path) -> Path:
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as archive:
+        archive.writestr("src/a.c", "int a;")
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("vendor/a-very-long-directory-name/lib.zip",
+                         inner.getvalue())
+        archive.writestr("readme.txt", "r")
+    return path
+
+
+class TestTheProgressLineRendering(unittest.TestCase):
+    """The line drawn from one event: width, truncation, glyphs, clock."""
+
+    def _line(self, stream=None, *, width=40, glyphs=None, clock=None):
+        stream = _FakeTerminal() if stream is None else stream
+        return stream, cli._StatusLine(
+            stream, glyphs=glyphs or cli._ASCII_GLYPHS,
+            width=lambda: width, clock=clock or _Clock())
+
+    def test_a_nested_archive_shows_level_bar_count_path_and_clock(self):
+        event = extraction.ProgressEvent(phase="nested", level=2, index=3, total=7,
+                                         path="lib/a.tar.gz", seven_zip=True)
+        text = cli._render_status(event, 12.4, 0, 80, cli._ASCII_GLYPHS)
+        self.assertEqual("| level 2 [###---------] 3/7  lib/a.tar.gz (7-Zip)  00:12",
+                         text)
+
+    def test_the_bar_counts_the_archives_done_never_the_one_in_hand(self):
+        first = extraction.ProgressEvent(phase="nested", level=1, index=1, total=4)
+        last = extraction.ProgressEvent(phase="nested", level=1, index=4, total=4)
+        self.assertIn("[------------]", cli._render_status(
+            first, 0, 0, 80, cli._ASCII_GLYPHS))
+        self.assertIn("[#########---]", cli._render_status(
+            last, 0, 0, 80, cli._ASCII_GLYPHS))
+
+    def test_each_opaque_phase_has_its_words_and_no_bar(self):
+        for event, words in (
+                (extraction.ProgressEvent(phase="download", path="https://h/p.zip"),
+                 "downloading https://h/p.zip"),
+                (extraction.ProgressEvent(phase="digest"),
+                 "hashing input"),
+                (extraction.ProgressEvent(phase="input", path="p.zip"),
+                 "extracting p.zip"),
+                (extraction.ProgressEvent(phase="scan", level=3),
+                 "level 3: looking for nested archives")):
+            with self.subTest(phase=event.phase):
+                text = cli._render_status(event, 0, 0, 80, cli._ASCII_GLYPHS)
+                self.assertIn(words, text)
+                self.assertNotIn("[", text)
+
+    def test_the_clock_reads_minutes_then_hours(self):
+        self.assertEqual("00:00", cli._elapsed_text(0))
+        self.assertEqual("01:15", cli._elapsed_text(75.9))
+        self.assertEqual("1:02:05", cli._elapsed_text(3725))
+
+    def test_the_line_never_reaches_the_last_column(self):
+        """A line that wraps can no longer be rewritten by a carriage return:
+        every rewrite would then add a line instead of replacing one."""
+        long_path = "/".join(["directory"] * 12) + "/archive.tar.gz"
+        wide_path = "\u4e2d\u6587" * 20 + ".zip"
+        for width in (8, 20, 40, 80, 200):
+            for path in (long_path, wide_path):
+                for glyphs in (cli._ASCII_GLYPHS, cli._UNICODE_GLYPHS):
+                    stream, line = self._line(width=width, glyphs=glyphs)
+                    line.update(extraction.ProgressEvent(
+                        phase="nested", level=12, index=999, total=1000, path=path,
+                        seven_zip=True))
+                    for event in ("input", "download", "scan", "digest"):
+                        line.update(extraction.ProgressEvent(phase=event, path=path))
+                    line.stop()
+                    for written in _line_writes(stream.getvalue()):
+                        with self.subTest(width=width, path=path[:12]):
+                            self.assertLessEqual(cli._columns(written),
+                                                 width - 1)
+
+    def test_a_long_path_is_cut_from_the_left(self):
+        """The end of a path names the archive; the start only says where."""
+        event = extraction.ProgressEvent(
+            phase="nested", level=1, index=1, total=1,
+            path="vendor/a-very-long-directory-name/lib.zip")
+        wide = cli._render_status(event, 0, 0, 64, cli._ASCII_GLYPHS)
+        self.assertEqual("| level 1 [------------] 1/1  ...-directory-name/lib.zip  00:00",
+                         wide)
+        self.assertEqual(63, len(wide))
+        # Narrower, the bar halves before the path goes entirely.
+        self.assertEqual("| level 1 [------] 1/1  ...b.zip  00:00",
+                         cli._render_status(event, 0, 0, 40, cli._ASCII_GLYPHS))
+
+    def test_the_clock_is_the_last_thing_to_go(self):
+        event = extraction.ProgressEvent(phase="scan", level=1)
+        self.assertEqual("| level 1: looking for ne...  00:00",
+                         cli._render_status(event, 0, 0, 36, cli._ASCII_GLYPHS))
+
+    def test_on_a_tiny_terminal_the_marker_goes_before_the_clock(self):
+        """And the clock is shown whole or not at all: "12:3" reads as a time."""
+        event = extraction.ProgressEvent(phase="nested", level=1, index=1,
+                                         total=1, path="p.7z", seven_zip=True)
+        whole_tail = " (7-Zip)  12:34"
+        for width in range(2, 17):
+            with self.subTest(width=width):
+                text = cli._render_status(event, 754, 0, width,
+                                          cli._ASCII_GLYPHS)
+                self.assertLessEqual(len(text), width - 1)
+                if width - 1 < len(whole_tail):
+                    self.assertNotIn("(7-Zip", text)
+                if ":" in text:
+                    self.assertTrue(text.endswith("12:34"), text)
+        # Where marker and clock just fit, the words have already gone.
+        self.assertEqual(whole_tail, cli._render_status(
+            event, 754, 0, 16, cli._ASCII_GLYPHS))
+        self.assertTrue(cli._render_status(
+            event, 754, 0, 12, cli._ASCII_GLYPHS).endswith("  12:34"))
+        self.assertIn("(7-Zip)", cli._render_status(
+            event, 754, 0, 40, cli._ASCII_GLYPHS))
+
+    def test_an_ambiguous_width_character_counts_as_two_columns(self):
+        """Conservative on purpose: a line one column short costs nothing, a
+        line that wraps cannot be rewritten."""
+        ellipsis, block = chr(0x2026), chr(0x2588)
+        self.assertEqual(2, cli._columns(ellipsis))
+        self.assertEqual(2, cli._columns(block))
+        self.assertEqual(1, cli._columns("a"))
+
+    def test_a_path_cannot_break_the_line(self):
+        event = extraction.ProgressEvent(phase="input", path="a\nb\tc.zip")
+        text = cli._render_status(event, 0, 0, 80, cli._ASCII_GLYPHS)
+        self.assertNotIn("\n", text)
+        self.assertNotIn("\t", text)
+        self.assertIn("a\\nb\\tc.zip", text)
+
+    def test_a_path_the_codec_cannot_carry_is_escaped(self):
+        event = extraction.ProgressEvent(phase="input", path="\u4e2d.zip")
+        text = cli._render_status(event, 0, 0, 80, cli._ASCII_GLYPHS, "cp1252")
+        self.assertIn("\\u4e2d.zip", text)
+
+    def test_stopping_leaves_the_line_blank_and_the_cursor_at_its_start(self):
+        stream, line = self._line()
+        line.update(extraction.ProgressEvent(phase="scan", level=1))
+        line.stop()
+        self.assertTrue(stream.getvalue().endswith("\r" + " " * 39 + "\r"))
+        self.assertEqual([""], _screen(stream.getvalue()))
+
+    def test_nothing_is_drawn_before_the_first_event(self):
+        stream, line = self._line()
+        line.tick()
+        line.stop()
+        self.assertEqual("", stream.getvalue())
+
+    def test_the_ticker_turns_the_spinner_and_the_clock(self):
+        clock = _Clock()
+        stream, line = self._line(clock=clock)
+        line.update(extraction.ProgressEvent(phase="scan", level=1))
+        clock.now += 61
+        line.tick()
+        line.stop()
+        draws = _line_writes(stream.getvalue())
+        self.assertTrue(draws[0].startswith("| level 1"))
+        self.assertTrue(draws[1].startswith("/ level 1"))
+        self.assertIn("01:01", draws[1])
+
+    def test_the_ticker_thread_ends_with_the_line(self):
+        stream, line = self._line()
+        line.start_ticker(interval=0.001)
+        line.update(extraction.ProgressEvent(phase="scan", level=1))
+        line.stop()
+        self.assertFalse(line._ticker.is_alive())
+        self.assertEqual([""], _screen(stream.getvalue()))
+
+    def test_a_failing_stream_switches_the_line_off_and_nothing_else(self):
+        stream, line = self._line(stream=_LineRefusingTerminal())
+        line.update(extraction.ProgressEvent(phase="scan", level=1))
+        self.assertTrue(line.broken)
+        line.update(extraction.ProgressEvent(phase="scan", level=2))
+        line.stop()
+        # The failed write may have put part of the line on the screen, so
+        # it is closed with a newline, once. Nothing else is written.
+        self.assertEqual("\n", stream.getvalue())
+
+    def _record_after(self, stream, line):
+        handler = cli._ProgressAwareHandler(stream=stream)
+        handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        handler.status_line = line
+        handler.emit(logging.makeLogRecord(
+            {"msg": "next", "levelname": "INFO", "levelno": logging.INFO}))
+        return handler
+
+    def test_a_record_never_lands_glued_to_a_line_that_went_broken(self):
+        stream, line = self._line(stream=_FailsAfterFirstDraw())
+        line.update(extraction.ProgressEvent(phase="scan", level=1))
+        line.update(extraction.ProgressEvent(phase="scan", level=2))
+        self.assertTrue(line.broken)
+        self._record_after(stream, line)
+        screen = _screen(stream.getvalue())
+        self.assertTrue(screen[0].startswith("| level 1"), screen)
+        self.assertEqual(["INFO: next", ""], screen[1:])
+        # Closed once: stopping adds nothing more.
+        line.stop()
+        self.assertEqual(3, len(_screen(stream.getvalue())))
+
+    def test_a_draw_whose_flush_failed_still_counts_as_drawn(self):
+        stream, line = self._line(stream=_FlushFailsOnce())
+        line.update(extraction.ProgressEvent(phase="scan", level=1))
+        self.assertTrue(line.broken)
+        self._record_after(stream, line)
+        screen = _screen(stream.getvalue())
+        self.assertTrue(screen[0].startswith("| level 1"), screen)
+        self.assertEqual(["INFO: next", ""], screen[1:])
+
+    def test_a_rendering_fault_switches_the_line_off_and_raises_nothing(self):
+        def no_width():
+            raise RuntimeError("no width today")
+
+        stream = _FakeTerminal()
+        line = cli._StatusLine(stream, glyphs=cli._ASCII_GLYPHS,
+                               width=no_width, clock=_Clock())
+        line.update(extraction.ProgressEvent(phase="scan", level=1))
+        line.tick()
+        line.stop()
+        self.assertTrue(line.broken)
+        self.assertEqual("", stream.getvalue())
+
+    def test_stopping_does_not_wait_for_ever_on_a_held_lock(self):
+        """A ticker stuck in a write on a stalled terminal holds the lock."""
+        stream, line = self._line()
+        line.update(extraction.ProgressEvent(phase="scan", level=1))
+        line.stop_timeout = 0.05
+        held, release = threading.Event(), threading.Event()
+
+        def hold():
+            with line.lock:
+                held.set()
+                release.wait()
+
+        holder = threading.Thread(target=hold, daemon=True)
+        holder.start()
+        held.wait()
+        try:
+            line.stop()
+        finally:
+            release.set()
+            holder.join()
+        self.assertTrue(line.broken)
+
+    def test_a_record_lands_on_a_line_of_its_own(self):
+        stream, line = self._line()
+        handler = cli._ProgressAwareHandler(stream=stream)
+        handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        handler.status_line = line
+        line.update(extraction.ProgressEvent(
+            phase="nested", level=1, index=1, total=2, path="a-rather-long-name.zip"))
+        handler.emit(logging.makeLogRecord(
+            {"msg": "short", "levelname": "INFO", "levelno": logging.INFO}))
+        self.assertTrue(_screen(stream.getvalue())[-1].startswith("| level 1"))
+        line.stop()
+        self.assertEqual(["INFO: short", ""], _screen(stream.getvalue()))
+
+    def test_with_no_line_the_handler_is_a_stream_handler(self):
+        plain, aware = io.StringIO(), io.StringIO()
+        record = logging.makeLogRecord(
+            {"msg": "same", "levelname": "INFO", "levelno": logging.INFO})
+        logging.StreamHandler(plain).emit(record)
+        cli._ProgressAwareHandler(aware).emit(record)
+        self.assertEqual(plain.getvalue(), aware.getvalue())
+
+
+class TestWhenTheProgressLineIsShown(unittest.TestCase):
+    """A terminal, no `--quiet`, a `TERM` that is not "dumb" -- and no option."""
+
+    def test_only_a_terminal_gets_the_line(self):
+        self.assertTrue(cli._status_line_wanted(_FakeTerminal(), False, {}))
+        self.assertFalse(cli._status_line_wanted(io.StringIO(), False, {}))
+
+    def test_quiet_and_a_dumb_terminal_switch_it_off(self):
+        self.assertFalse(cli._status_line_wanted(_FakeTerminal(), True, {}))
+        self.assertFalse(cli._status_line_wanted(
+            _FakeTerminal(), False, {"TERM": "dumb"}))
+
+    def test_a_closed_stream_is_not_a_terminal(self):
+        stream = _FakeTerminal()
+        stream.close()
+        self.assertFalse(cli._status_line_wanted(stream, False, {}))
+
+    def test_unicode_glyphs_only_where_they_can_be_drawn(self):
+        utf8, cp1252 = _FakeTerminal("utf-8"), _FakeTerminal("cp1252")
+        self.assertIs(cli._UNICODE_GLYPHS, cli._glyphs_for(utf8, {}, "posix"))
+        self.assertIs(cli._ASCII_GLYPHS, cli._glyphs_for(cp1252, {}, "posix"))
+        # The legacy Windows console draws braille as boxes whatever the
+        # stream's codec says; Windows Terminal announces itself.
+        self.assertIs(cli._ASCII_GLYPHS, cli._glyphs_for(utf8, {}, "nt"))
+        self.assertIs(cli._UNICODE_GLYPHS, cli._glyphs_for(
+            utf8, {"WT_SESSION": "1"}, "nt"))
+        self.assertIs(cli._ASCII_GLYPHS, cli._glyphs_for(
+            cp1252, {"WT_SESSION": "1"}, "nt"))
+
+    def test_the_linux_virtual_console_gets_ascii(self):
+        """Its font has neither braille nor block glyphs, whatever the codec."""
+        utf8 = _FakeTerminal("utf-8")
+        self.assertIs(cli._ASCII_GLYPHS, cli._glyphs_for(
+            utf8, {"TERM": "linux"}, "posix"))
+        self.assertIs(cli._UNICODE_GLYPHS, cli._glyphs_for(
+            utf8, {"TERM": "xterm-256color"}, "posix"))
+
+    def test_the_command_gains_no_option_for_it(self):
+        listed = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*",
+                                cli.build_parser().format_help()))
+        self.assertNotIn("--progress", listed)
+        self.assertNotIn("--no-progress", listed)
+
+
+class TestTheProgressLineThroughTheCommand(_CommandBench):
+    """The whole command, its stderr a terminal of 40 columns.
+
+    NOTHING HERE READS THE MACHINE. The environment, the platform, the width
+    and the clock are handed to the line through its injection points, and
+    the ticker thread is not started: every draw comes from an event, so the
+    output is the same on every run.
+    """
+
+    WIDTH = 40
+
+    def _run_on(self, stderr, argv, **hooks):
+        settings = dict(environ={}, os_name="posix",
+                        width=lambda: self.WIDTH, clock=_Clock(),
+                        ticker=False)
+        settings.update(hooks)
+        line_for_this_run = functools.partial(cli._progress_line, **settings)
+        out = io.StringIO()
+        with _isolated_logger(), \
+                mock.patch.object(cli, "_progress_line", line_for_this_run):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(stderr):
+                try:
+                    code = cli.main(argv)
+                except SystemExit as exit_code:
+                    code = exit_code.code
+        return code, out.getvalue(), stderr.getvalue()
+
+    def test_a_nested_run_draws_the_line_and_leaves_only_records(self):
+        archive = _nested_zip(self.dir / "p.zip")
+        code, out, err = self._run_on(_FakeTerminal(),
+                                      [str(archive), str(self.dir / "out")])
+        self.assertEqual(0, code)
+        self.assertEqual(f"{self.dir / 'out' / 'p.zip'}\n", out)
+
+        draws = _line_writes(err)
+        self.assertTrue(any("level 1 [" in draw for draw in draws), draws)
+        for draw in draws:
+            self.assertLessEqual(cli._columns(draw), self.WIDTH - 1)
+        # What stays on the screen is the log, line for line, and a blank
+        # line under it: the progress line left nothing behind.
+        screen = _screen(err)
+        self.assertEqual("", screen[-1])
+        for shown in screen[:-1]:
+            with self.subTest(shown=shown):
+                self.assertRegex(shown, r"^(INFO|WARNING|ERROR|DEBUG): ")
+
+    def test_the_line_is_gone_before_the_error_is_written(self):
+        def failing_prepare(source, workspace=None, report=None, replace=False,
+                            no_archive_dir=False, progress=None):
+            progress(extraction.ProgressEvent(phase="input", path="p.zip"))
+            raise ValueError("boom")
+
+        archive = self._zip("p.zip", [("a.txt", "a")])
+        with mock.patch.object(cli, "prepare_source", failing_prepare):
+            code, _, err = self._run_on(_FakeTerminal(),
+                                        [str(archive), str(self.dir / "out")])
+        self.assertEqual(1, code)
+        self.assertIn("\r" + " " * (self.WIDTH - 1) + "\rERROR: ValueError: boom",
+                      err)
+        self.assertIn("ERROR: ValueError: boom", _screen(err))
+
+    def test_an_interrupted_run_leaves_the_line_blank(self):
+        def interrupted_prepare(source, workspace=None, report=None,
+                                replace=False, no_archive_dir=False,
+                                progress=None):
+            progress(extraction.ProgressEvent(phase="scan", level=1))
+            raise KeyboardInterrupt
+
+        archive = self._zip("p.zip", [("a.txt", "a")])
+        stderr = _FakeTerminal()
+        with mock.patch.object(cli, "prepare_source", interrupted_prepare):
+            with self.assertRaises(KeyboardInterrupt):
+                self._run_on(stderr, [str(archive), str(self.dir / "out")])
+        self.assertTrue(_line_writes(stderr.getvalue()))
+        self.assertEqual("", _screen(stderr.getvalue())[-1])
+
+    def test_quiet_draws_nothing(self):
+        archive = _nested_zip(self.dir / "p.zip")
+        code, _, err = self._run_on(_FakeTerminal(),
+                                    ["-q", str(archive), str(self.dir / "out")])
+        self.assertEqual(0, code)
+        self.assertNotIn("\r", err)
+
+    def test_a_dumb_terminal_draws_nothing(self):
+        archive = _nested_zip(self.dir / "p.zip")
+        code, _, err = self._run_on(_FakeTerminal(),
+                                    [str(archive), str(self.dir / "out")],
+                                    environ={"TERM": "dumb"})
+        self.assertEqual(0, code)
+        self.assertNotIn("\r", err)
+
+    def test_a_rendering_fault_leaves_the_run_successful(self):
+        def no_width():
+            raise RuntimeError("no width today")
+
+        archive = _nested_zip(self.dir / "p.zip")
+        code, out, err = self._run_on(_FakeTerminal(),
+                                      [str(archive), str(self.dir / "out")],
+                                      width=no_width)
+        self.assertEqual(0, code)
+        self.assertEqual(f"{self.dir / 'out' / 'p.zip'}\n", out)
+        self.assertNotIn("\r", err)
+        self.assertIn("Containers opened: 2.", err)
+
+    def test_the_glyphs_follow_the_platform(self):
+        """A legacy Windows console gets ASCII; elsewhere, Unicode."""
+        archive = _nested_zip(self.dir / "p.zip")
+        _, _, legacy = self._run_on(_FakeTerminal(),
+                                    [str(archive), str(self.dir / "one")],
+                                    os_name="nt")
+        _, _, modern = self._run_on(_FakeTerminal(),
+                                    [str(archive), str(self.dir / "two")])
+        self.assertTrue(legacy.isascii())
+        self.assertFalse(modern.isascii())
+
+    def test_a_stderr_that_is_not_a_terminal_is_what_it_was(self):
+        """The line is the only thing that differs between a terminal and a
+        pipe: replayed, the terminal's screen holds the pipe's bytes."""
+        archive = _nested_zip(self.dir / "p.zip")
+        code, _, piped = self._run_on(io.StringIO(),
+                                      [str(archive), str(self.dir / "one")])
+        self.assertEqual(0, code)
+        self.assertNotIn("\r", piped)
+        code, _, shown = self._run_on(_FakeTerminal(),
+                                      [str(archive), str(self.dir / "two")])
+        self.assertEqual(0, code)
+        self.assertEqual(piped.replace(str(self.dir / "one"),
+                                       str(self.dir / "two")).split("\n"),
+                         _screen(shown))
+
+    def test_a_console_that_fails_loses_the_line_and_keeps_the_run(self):
+        archive = _nested_zip(self.dir / "p.zip")
+        code, out, err = self._run_on(_LineRefusingTerminal(),
+                                      [str(archive), str(self.dir / "out")])
+        self.assertEqual(0, code)
+        self.assertTrue(out.strip())
+        self.assertNotIn("\r", err)
+        self.assertIn("Containers opened: 2.", err)
 
 
 if __name__ == "__main__":

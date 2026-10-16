@@ -639,5 +639,166 @@ class TestWhatThisInstrumentationDidNotChange(_Bench):
         self.assertTrue((root / "inner.zip" / "code" / "aes.c").is_file())
 
 
+
+# ---------------------------------------------------------------------------
+# Progress: an optional callable, told where the run stands -- and nothing else
+# ---------------------------------------------------------------------------
+class TestProgressEvents(_Bench):
+    """`prepare_source(progress=...)` calls back at the START of each phase.
+
+    The events carry no report and no share of a whole: the run's total is
+    discovered level by level. What is asserted here is the sequence, that it
+    changes nothing in what the run produces, and that the library does not
+    hide a failure of the caller's own callable.
+    """
+
+    def _nested_input(self) -> Path:
+        """outer.zip -> lib/a.zip -> deep.zip, and lib/b.zip beside a.zip."""
+        deep = io.BytesIO()
+        with zipfile.ZipFile(deep, "w") as archive:
+            archive.writestr("x.txt", "x")
+        middle = io.BytesIO()
+        with zipfile.ZipFile(middle, "w") as archive:
+            archive.writestr("deep.zip", deep.getvalue())
+        sibling = io.BytesIO()
+        with zipfile.ZipFile(sibling, "w") as archive:
+            archive.writestr("y.txt", "y")
+        return self._zip_at(self.dir / "outer.zip",
+                            [("lib/a.zip", middle.getvalue()),
+                             ("lib/b.zip", sibling.getvalue()),
+                             ("readme.txt", "r")])
+
+    @staticmethod
+    def _listing(tree: Path) -> list:
+        return sorted((path.relative_to(tree).as_posix(),
+                       path.read_bytes() if path.is_file() else None)
+                      for path in tree.rglob("*"))
+
+    def test_the_sequence_of_a_nested_run(self):
+        events = []
+        prepared = ux.prepare_source(str(self._nested_input()),
+                                     workspace=self.dir / "ws",
+                                     progress=events.append)
+
+        self.assertTrue((prepared.tree / "lib" / "a.zip" / "deep.zip"
+                         / "x.txt").is_file())
+        self.assertEqual([
+            ux.ProgressEvent(phase="digest"),
+            ux.ProgressEvent(phase="input", path="outer.zip"),
+            ux.ProgressEvent(phase="scan", level=1),
+            ux.ProgressEvent(phase="nested", level=1, index=1, total=2,
+                             path="lib/a.zip"),
+            ux.ProgressEvent(phase="nested", level=1, index=2, total=2,
+                             path="lib/b.zip"),
+            ux.ProgressEvent(phase="scan", level=2),
+            ux.ProgressEvent(phase="nested", level=2, index=1, total=1,
+                             path="lib/a.zip/deep.zip"),
+            # The search that finds nothing is a phase too: it is what the
+            # run is doing while it looks.
+            ux.ProgressEvent(phase="scan", level=3),
+        ], events)
+
+    def test_every_path_is_relative_and_posix(self):
+        events = []
+        ux.prepare_source(str(self._nested_input()), workspace=self.dir / "ws",
+                          progress=events.append)
+        carrying = [event for event in events
+                    if event.phase in ("nested", "input")]
+        self.assertEqual(4, len(carrying))
+        for event in carrying:
+            with self.subTest(event=event):
+                self.assertTrue(event.path)
+                self.assertNotIn("\\", event.path)
+                self.assertFalse(Path(event.path).is_absolute())
+                self.assertNotIn(str(self.dir), event.path)
+        # A digest and a search name no archive: their path is empty.
+        others = [event for event in events
+                  if event.phase in ("scan", "digest")]
+        self.assertEqual(4, len(others))
+        for event in others:
+            with self.subTest(event=event):
+                self.assertEqual("", event.path)
+
+    def test_the_report_and_the_tree_are_the_same_with_or_without_a_callable(self):
+        source = str(self._nested_input())
+        without = ux.prepare_source(source, workspace=self.dir / "one")
+        with_it = ux.prepare_source(source, workspace=self.dir / "two",
+                                    progress=lambda event: None)
+
+        self.assertEqual(without.report, with_it.report)
+        self.assertEqual(without.nature, with_it.nature)
+        self.assertEqual(without.digest, with_it.digest)
+        self.assertEqual(self._listing(without.tree), self._listing(with_it.tree))
+
+    def test_the_callable_never_receives_the_report(self):
+        received = []
+        ux.prepare_source(str(self._nested_input()), workspace=self.dir / "ws",
+                          progress=received.append)
+        self.assertTrue(received)
+        for event in received:
+            self.assertIsInstance(event, ux.ProgressEvent)
+            for value in vars(event).values():
+                self.assertNotIsInstance(value, rp.ExtractionReport)
+
+    def test_an_exception_of_the_callable_is_not_swallowed(self):
+        """A callable that fails is the CALLER's failure, and hiding it would
+        let a caller believe its display, or its cancellation, worked."""
+        class _Cancelled(Exception):
+            pass
+
+        def cancel_at_level_two(event):
+            if event.phase == "scan" and event.level == 2:
+                raise _Cancelled()
+
+        with self.assertRaises(_Cancelled):
+            ux.prepare_source(str(self._nested_input()),
+                              workspace=self.dir / "ws",
+                              progress=cancel_at_level_two)
+
+    def test_the_7zip_flag_is_read_off_the_category(self):
+        root = self._tree()
+        (root / "tools").mkdir()
+        (root / "tools" / "pack.7z").write_bytes(b"not really a 7z")
+        self._zip_at(root / "plain.zip")
+        events = []
+        with mock.patch.object(ux, "find_7zip_binary", return_value=None):
+            ux.flatten_nested_archives(root, progress=events.append)
+        flags = {event.path: event.seven_zip for event in events
+                 if event.phase == "nested"}
+        self.assertEqual({"plain.zip": False, "tools/pack.7z": True}, flags)
+
+    def test_a_directory_source_emits_nothing(self):
+        source = self._tree()
+        (source / "a.c").write_text("int a;", encoding="utf-8")
+        events = []
+        ux.prepare_source(str(source), progress=events.append)
+        self.assertEqual([], events)
+
+    def test_a_url_announces_its_download_first(self):
+        archive = self._zip_at(self.dir / "pkg.zip")
+
+        def fake_download(source, dest_dir):
+            Path(dest_dir).mkdir(parents=True, exist_ok=True)
+            target = Path(dest_dir) / "pkg.zip"
+            shutil.copyfile(archive, target)
+            return target
+
+        events = []
+        with mock.patch.object(ux, "download_source", fake_download):
+            ux.prepare_source("https://example.invalid/pkg.zip",
+                              workspace=self.dir / "ws",
+                              progress=events.append)
+        self.assertEqual(
+            ux.ProgressEvent(phase="download", path="https://example.invalid/pkg.zip"),
+            events[0])
+        self.assertEqual(["download", "digest", "input", "scan"],
+                         [event.phase for event in events])
+
+    def test_the_event_is_frozen(self):
+        event = ux.ProgressEvent(phase="scan", level=1)
+        with self.assertRaises(AttributeError):
+            event.level = 2
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

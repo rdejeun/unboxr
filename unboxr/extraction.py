@@ -158,6 +158,18 @@ and the package installs nothing but a `NullHandler` on its root logger (see
 nothing to stdout and nothing to stderr. Configuring handlers, levels and
 formats is the application's job; `unboxr.cli` does it for the command line and
 for nothing else.
+
+PROGRESS
+--------
+A caller that wants to show where a long run stands passes a `progress`
+callable to `prepare_source` (or to `flatten_nested_archives`). It receives one
+`ProgressEvent` at the START of each phase and of each nested archive, and
+nothing else: no end event, no percentage, and never the report. The total of
+a run is not known in advance -- it is discovered level by level -- so the only
+count an event carries is that of the archives found at the current level.
+Without a callable, which is the default, nothing is emitted anywhere, and the
+report and the tree are the same with or without one. An exception raised by
+the callable is not caught here: it ends the run like any other.
 """
 
 from __future__ import annotations
@@ -177,6 +189,7 @@ import tarfile
 import tempfile
 import urllib.request
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -232,6 +245,40 @@ class UnsupportedFormatError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+@dataclass(frozen=True, kw_only=True)
+class ProgressEvent:
+    """Where a run stands, handed to the `progress` callable of `prepare_source`.
+
+    `phase` is one of five values, each naming what is STARTING:
+
+      - "download": fetching a URL; `path` is the URL;
+      - "digest": hashing the received input; no `path`;
+      - "input": extracting the received input; `path` is its name;
+      - "scan": looking for nested archives at `level`; no `path`;
+      - "nested": extracting archive `index` of the `total` found at `level`;
+        `path` is POSIX and relative to the extracted tree.
+
+    `seven_zip` says the archive's FORMAT is delegated to 7-Zip, read off the
+    category already computed for it. It says nothing about the machine:
+    without a 7-Zip binary such an archive is not opened, and the report says
+    so. It decides nothing.
+
+    Every field is a keyword, so that adding one later breaks no caller.
+
+    NEVER AN ABSOLUTE PATH, for the reason `_reportable_path_and_frame` gives:
+    the event would then depend on the machine. And never a share of a whole:
+    `total` counts the archives found at ONE level, because nobody knows how
+    many the next level holds until this one is open.
+    """
+
+    phase: str
+    level: int = 0
+    index: int = 0
+    total: int = 0
+    path: str = ""
+    seven_zip: bool = False
 
 
 # --- Filling the report, without ever becoming what amputates the corpus -----
@@ -1325,7 +1372,7 @@ def extract_archive(archive_path: Path, dest: Path, *, report=None,
 
 
 def flatten_nested_archives(root: Path, max_depth: int = 10,
-                            report=None) -> None:
+                            report=None, *, progress=None) -> None:
     """
     Recursive flattening: many public packages (repositories, releases,
     tarballs, .rpm/.deb system packages, .iso images...) themselves contain
@@ -1339,6 +1386,10 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
     container that was opened no longer exists as a file to be walked. The
     archives still present when flattening stops are, by definition, still
     there -- reading them at that instant is still "during the extraction".
+
+    `progress`, when given, is called with a `ProgressEvent` as each level's
+    search starts and as each nested archive's extraction starts. It decides
+    nothing here, and an exception it raises is not caught.
     """
     # Archives already attempted and left in place: a failed extraction never
     # removes its source, so an unguarded re-scan re-discovers and re-attempts
@@ -1360,6 +1411,8 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
     _note_depth(report, limit=max_depth, reached=0)
 
     for level in range(1, max_depth + 1):
+        if progress is not None:
+            progress(ProgressEvent(phase="scan", level=level))
         # Sort on the POSIX relative path: independent of the file system and of
         # the machine. This is guarantee 1 of the determinism contract.
         found_archives = sorted(
@@ -1386,8 +1439,18 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
 
         logger.info("Level %s: %s nested archive(s) found.", level, len(found_archives))
         _note_depth(report, reached=level)
-        for archive in found_archives:
-            _, matched_ext = categorize_archive(archive)
+        for index, archive in enumerate(found_archives, start=1):
+            category, matched_ext = categorize_archive(archive)
+            # AT THE START ONLY. The iteration has four ways out (failure,
+            # archive kept, rename failed, success); an end event would have
+            # to be written at each of them, and the next event -- or the end
+            # of the run -- already says this one is over.
+            if progress is not None:
+                progress(ProgressEvent(
+                    phase="nested", level=level, index=index,
+                    total=len(found_archives),
+                    path=_reportable_path(archive, root),
+                    seven_zip=category in CATEGORIES_NEEDING_SEVEN_ZIP))
             # FOUR STEPS, IN THIS ORDER, and the order is forced by the file
             # system. The final directory of a nested archive is the archive's
             # OWN NAME, verbatim -- `toto.jar` gives `toto.jar/`, `toto.zip`
@@ -2181,7 +2244,8 @@ def _extract_replacing_archive_with_its_own_content(
 def prepare_source(source: str, workspace: Path | None = None,
                    report: ExtractionReport | None = None, *,
                    replace: bool = False,
-                   no_archive_dir: bool = False) -> PreparedSource:
+                   no_archive_dir: bool = False,
+                   progress=None) -> PreparedSource:
     """
     Resolve a source in the 3 possible cases and always return a directory ready
     to be walked, together with the NATURE of the resolved unit and the SHA-256
@@ -2235,6 +2299,13 @@ def prepare_source(source: str, workspace: Path | None = None,
     read poorly unpacked; a fourth reads worse, and "a report whose field
     cannot be omitted" is meant literally -- a field has a name. The three
     existing pieces keep exactly their meaning.
+
+    `progress`, when given, is a callable that receives a `ProgressEvent` at the
+    start of each phase -- download, digest of the input, extraction of the
+    input, then each level of the flattening and each nested archive in it. It
+    never receives the report, it changes nothing in the report or the tree,
+    and an exception it raises is NOT caught: it ends the run like any other.
+    A directory source extracts nothing and emits nothing.
     """
     from_url = is_url(source)
     if replace:
@@ -2248,6 +2319,8 @@ def prepare_source(source: str, workspace: Path | None = None,
         report = new_report()
 
     if from_url:
+        if progress is not None:
+            progress(ProgressEvent(phase="download", path=source))
         local_path = download_source(source, workspace)
     else:
         local_path = Path(source)
@@ -2306,6 +2379,8 @@ def prepare_source(source: str, workspace: Path | None = None,
     #
     # The digest covers the FIRST-LEVEL archive, never a nested archive found by
     # the flattening below: what is attested is the input as it was GIVEN.
+    if progress is not None:
+        progress(ProgressEvent(phase="digest"))
     digest_hex = _sha256_digest_of_file(local_path)
     logger.info("SHA-256 digest of the input: sha256:%s", digest_hex)
 
@@ -2321,6 +2396,13 @@ def prepare_source(source: str, workspace: Path | None = None,
 
     target = resolve_extraction_root(source, workspace, replace=replace,
                                      no_archive_dir=no_archive_dir)
+
+    # ONE event for the input, before the branch below: both of its arms
+    # extract the same archive, and only the dance around it differs.
+    if progress is not None:
+        progress(ProgressEvent(
+            phase="input", path=local_path.name,
+            seven_zip=category in CATEGORIES_NEEDING_SEVEN_ZIP))
 
     # THE ARCHIVE OCCUPIES ITS OWN TARGET PATH, STRUCTURALLY, in exactly two
     # cases: `--replace` (`target` IS `local_path`, by
@@ -2416,6 +2498,6 @@ def prepare_source(source: str, workspace: Path | None = None,
                 _record(report, DOWNLOADED_COPY_KEPT_ALONGSIDE_THE_TREE,
                         local_path, level=0, detail=str(exc), digest=digest_hex)
     logger.info("Looking for nested archives (recursive flattening)...")
-    flatten_nested_archives(destination, report=report)
+    flatten_nested_archives(destination, report=report, progress=progress)
     return PreparedSource(tree=destination, nature=nature, digest=digest_hex,
                           report=report)

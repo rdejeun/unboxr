@@ -245,6 +245,13 @@ class TestPackagingBoundary(unittest.TestCase):
         source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("importlib.metadata", source)
 
+    def test_the_progress_event_is_exported_by_both_gestures(self):
+        """Exporting a public name is two gestures: the
+        import block AND `__all__`. A name in one and missing from the other
+        passes every other test."""
+        self.assertIn("ProgressEvent", unboxr.__all__)
+        self.assertIs(unboxr.extraction.ProgressEvent, unboxr.ProgressEvent)
+
     def test_the_test_suite_uses_unittest_and_nothing_else(self):
         self.assertEqual([], list(REPO_ROOT.glob("**/conftest.py")))
         for path in sorted((REPO_ROOT / "tests").glob("*.py")):

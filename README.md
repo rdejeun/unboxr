@@ -87,7 +87,7 @@ source is already a directory.
 | `--replace` | extract the archive in place and replace it (see above) |
 | `--no-archive-dir` | unpack straight into DESTINATION, no wrapper directory (see above) |
 | `-v`, `--verbose` | show debug records as well |
-| `-q`, `--quiet` | warnings only -- **plus every announced amputation** |
+| `-q`, `--quiet` | warnings only -- **plus every announced amputation**; no progress line |
 | `--sbom FILE` | also write the extraction document to FILE (see below) |
 | `--linked-bom URN` | record which other BOM that document belongs to (see below) |
 | `--list-formats` | print what *this machine* does with every recognised extension, and exit (see below) |
@@ -123,6 +123,21 @@ an extraction took place. `-v` and `-q` are accepted and do nothing here. See
 
 `--l` and `--li` are ambiguous between `--linked-bom` and `--list-formats`
 and are refused with code 2. `--lin` and anything longer are unambiguous.
+
+**Progress line.** When stderr is a terminal, one line at the bottom of it is
+rewritten in place while the extraction runs: the phase, the nesting level, a
+bar over the archives found *at that level*, the archive being opened (marked
+`(7-Zip)` when its format is delegated to 7-Zip -- without a 7-Zip binary such
+an archive is not opened, and the summary says so) and the elapsed time. Log records
+scroll above it, and it is erased before the summary. There is no overall
+percentage, because the total is not known in advance: each level's archives
+are only discovered once the level above has been opened. The line is not drawn
+at all -- not one byte of it -- when stderr is a pipe or a file, under `-q`, or
+when `TERM=dumb`; there is no option to force it. It uses no escape sequence,
+only a carriage return and spaces, and falls back to ASCII glyphs where Unicode
+would not render (a legacy Windows console, the Linux virtual console, or a
+codec that cannot carry them).
+stdout is untouched.
 
 This command line is deliberately a **floor**. It writes no document unless you
 ask for one, and it has no self-check gate, no strict mode and no verdict of
@@ -170,6 +185,21 @@ nothing to stderr. To see what it is doing, configure logging yourself:
 ```python
 import logging
 logging.basicConfig(level=logging.INFO)
+```
+
+To follow a long run, pass a callable as `progress`. It is called with an
+`unboxr.ProgressEvent` at the *start* of each phase -- `"download"`,
+`"digest"`, `"input"`, then for each nesting level `"scan"` and one `"nested"`
+per archive found, with its `index` among the `total` found at that level and
+its path relative to the tree. There is no end event and no overall total, the
+callable never receives the report, and the result is the same with or without
+it. An exception it raises is not caught: it ends the run. Without it, nothing
+is emitted anywhere.
+
+```python
+prepared = unboxr.prepare_source("package-1.2.3.whl",
+                                 workspace=Path("./unpacked"),
+                                 progress=print)
 ```
 
 ## What could not be opened
