@@ -608,10 +608,82 @@ CATEGORY_IF_NOT_A_TAR = {
 }
 
 
+def _signature_category(path: Path) -> str | None:
+    """The category of the first signature of ARCHIVE_SIGNATURES the file
+    starts with, or `None`: unreadable, or no signature recognised. Reads
+    eight bytes and nothing else -- whether a compressed stream wraps a tar is
+    `categorize_by_content`'s question, not this one's."""
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(8)
+    except OSError:
+        # Unreadable, missing, a directory: no conclusion is drawn from it.
+        return None
+    for signature, category in ARCHIVE_SIGNATURES:
+        if not header.startswith(signature):
+            continue
+        # bzip2 ALWAYS follows "BZh" with the compression level (1-9, informal
+        # RFC of the format). Without this check, a file whose first three
+        # bytes coincide with "BZh" by chance is categorised as an archive --
+        # measured in code review on 20 August 2026, on
+        # a `.py` file that had nothing to do with bzip2.
+        if signature == b"BZh" and not (b"1" <= header[3:4] <= b"9"):
+            continue
+        return category
+    return None
+
+
+# WHEN A SIGNATURE OVERRULES AN EXTENSION. The extension used to win even
+# against a certain signature, so a file whose name lies was handed to the
+# wrong decoder and declared unreadable. Reported 19 October 2026: an
+# installer whose 61 `*.zip.xz` payloads are 7z archives, every one refused
+# with "Input format not supported by decoder", while 7-Zip opens them all.
+#
+# For each extension category, the signatures that AGREE with it -- those its
+# own extractor reads. Any other recognised signature contradicts the name,
+# and the content wins. A `.lzma` agrees with xz as well: its extractor is
+# `lzma.open`, which reads both, and that is what `lzma.open` itself writes by
+# default (measured on the fabricated-name test). The empty set: a plain tar
+# has no signature at offset 0 -- it starts with a member name --, so any
+# recognised signature contradicts it.
+SIGNATURE_AGREEING_WITH = {
+    "zip": frozenset({"zip"}),
+    "tar_gz": frozenset({"tar_gz"}), "plain_gzip": frozenset({"tar_gz"}),
+    "tar_bz2": frozenset({"tar_bz2"}), "plain_bz2": frozenset({"tar_bz2"}),
+    "tar_xz": frozenset({"tar_xz"}), "plain_xz": frozenset({"tar_xz"}),
+    "tar_lzma": frozenset({"tar_lzma", "tar_xz"}),
+    "plain_lzma": frozenset({"tar_lzma", "tar_xz"}),
+    "tar_7z": frozenset({"external_7zip"}),
+    "zstd_unsupported": frozenset({"zstd_unsupported"}),
+    "tar_plain": frozenset(),
+}
+
+# Never overruled: 7-Zip reads the content itself, whatever the name says, so
+# no signature can send the file anywhere better.
+CATEGORIES_NEVER_OVERRULED = frozenset({"external_7zip"})
+
+# Signatures too weak to overrule a name. The LZMA "alone" one is a guess --
+# the format has no magic number, see ARCHIVE_SIGNATURES.
+HEURISTIC_SIGNATURES = frozenset({"tar_lzma"})
+
+
+def _content_contradicts(path: Path, category: str) -> bool:
+    """True when a CERTAIN signature says the file is not what its extension
+    category says. Positive-only oracle: no signature, or a heuristic one,
+    never contradicts anything."""
+    if category in CATEGORIES_NEVER_OVERRULED:
+        return False
+    signature = _signature_category(path)
+    if signature is None or signature in HEURISTIC_SIGNATURES:
+        return False
+    return signature not in SIGNATURE_AGREEING_WITH[category]
+
+
 def categorize_by_content(path: Path):
     """
     Categorise an archive from its first bytes, when the extension said
-    nothing. A complement to `categorize_archive()`, never a replacement.
+    nothing or a certain signature contradicts it. A complement to
+    `categorize_archive()`, never a replacement.
 
     Reason: a public package contains archives whose extension was lost,
     renamed, or never existed -- vendored modules, test blobs, files truncated
@@ -623,23 +695,8 @@ def categorize_by_content(path: Path):
     Returns `(category, "")` -- the empty string signals that no extension
     matched, which `_name_without_extension()` already knows how to read.
     """
-    try:
-        with open(path, "rb") as handle:
-            header = handle.read(8)
-    except OSError:
-        # Unreadable, missing, a directory: no conclusion is drawn from it.
-        return None, None
-
-    for signature, category in ARCHIVE_SIGNATURES:
-        if not header.startswith(signature):
-            continue
-        # bzip2 ALWAYS follows "BZh" with the compression level (1-9, informal
-        # RFC of the format). Without this check, a file whose first three
-        # bytes coincide with "BZh" by chance is categorised as an archive --
-        # measured in code review on 20 August 2026, on
-        # a `.py` file that had nothing to do with bzip2.
-        if signature == b"BZh" and not (b"1" <= header[3:4] <= b"9"):
-            continue
+    category = _signature_category(path)
+    if category is not None:
         if category in CATEGORY_IF_NOT_A_TAR:
             try:
                 if not tarfile.is_tarfile(path):
@@ -680,9 +737,12 @@ def categorize_archive(path: Path, *, report=None, root=None, level=None):
     Three steps, in this order -- the order IS the contract:
       1. declared exclusion: an office container is set aside WITHOUT a single
          byte being read, and the omission is announced;
-      2. extension: cheaper than a read, more explicit on review, and the only
-         step able to tell a ".tar.gz" from a ".gz";
-      3. content: fallback on magic numbers, as a positive-only oracle.
+      2. extension: more explicit on review, and the only step able to tell a
+         ".tar.gz" from a ".gz" -- UNLESS a certain signature contradicts it
+         (`_content_contradicts`): a name can lie, a signature cannot;
+      3. content: magic numbers, as a positive-only oracle, when the extension
+         said nothing or was contradicted. Both cases are announced and
+         recorded the same way: the extension was absent or misleading.
     """
     # (1) Exclusion policy, BEFORE any read. Without this step, step (3) would
     #     let the packaging parts of office documents into the corpus -- a
@@ -701,10 +761,13 @@ def categorize_archive(path: Path, *, report=None, root=None, level=None):
                 digest_of=path)
         return None, None
 
-    # (2) Extension.
+    # (2) Extension, unless a certain signature contradicts it -- then the
+    #     content step below decides, and says so.
     for ext in SORTED_EXTENSIONS:
         if name.endswith(ext):
-            return CATEGORY_BY_EXT[ext], ext
+            if not _content_contradicts(path, CATEGORY_BY_EXT[ext]):
+                return CATEGORY_BY_EXT[ext], ext
+            break
 
     # (3) Content. The message makes the widening of the corpus auditable: a
     #     corpus that grows without a trace is no better than a corpus that

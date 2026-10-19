@@ -197,21 +197,67 @@ class TestContentIdentification(_Bench):
         self.assertIn("opaque.data", capture.messages)
         self.assertIn("zip", capture.messages)
 
-    def test_the_extension_wins_and_no_byte_is_read(self):
-        """A known extension short-circuits content: that IS the imposed order."""
+    def test_the_extension_wins_when_the_content_agrees(self):
+        """A known extension the signature agrees with keeps its category and
+        its matched extension, and the content probe -- the one that opens a
+        compressed stream to look for a tar -- is never run."""
         archive = self._zip("package.zip")
         with mock.patch.object(ux, "categorize_by_content") as spy:
             category, ext = ux.categorize_archive(archive)
         spy.assert_not_called()
         self.assertEqual((category, ext), ("zip", ".zip"))
 
-    def test_the_extension_wins_even_when_the_content_says_otherwise(self):
-        """A zip named .tar.gz stays categorised by its name."""
+    def test_a_signature_contradicting_the_extension_wins(self):
+        """A zip named .tar.gz is a zip.
+
+        The extension used to win even against a certain signature, so such a
+        file was handed to the wrong decoder and declared unreadable. Reported
+        19 October 2026 on an installer whose 61 `*.zip.xz` payloads are 7z
+        archives: every one was refused with "Input format not supported by
+        decoder", while 7-Zip opens them all. The contradiction is announced
+        and recorded as a recognition by content."""
         source = self._zip("trap.zip")
         liar = self.dir / "trap.tar.gz"
         source.rename(liar)
-        category, ext = ux.categorize_archive(liar)
-        self.assertEqual((category, ext), ("tar_gz", ".tar.gz"))
+        held = ux.ExtractionReport(capability=ux.probe_capability_profile())
+        (category, ext), capture = self._capture(
+            ux.categorize_archive, liar, report=held, root=self.dir)
+        self.assertEqual((category, ext), ("zip", ""))
+        self.assertIn("misleading", capture.messages)
+        self.assertEqual(["trap.tar.gz"], [entry.path for entry in held.widened])
+
+    def test_a_7z_named_zip_xz_is_handed_to_7zip(self):
+        liar = self.dir / "edk_0008.zip.xz"
+        liar.write_bytes(b"7z\xbc\xaf\x27\x1c\x00\x04" + b"\x00" * 24)
+        self.assertEqual(ux.categorize_archive(liar), ("external_7zip", ""))
+
+    def test_a_heuristic_signature_never_overrules_an_extension(self):
+        """The LZMA "alone" signature is a guess -- the format has no magic
+        number -- and a guess does not outweigh a name."""
+        path = self.dir / "data.zip"
+        path.write_bytes(b"\x5d\x00\x00\x80\x00" + b"\x00" * 27)
+        self.assertEqual(ux.categorize_archive(path), ("zip", ".zip"))
+
+    def test_a_format_handed_to_7zip_is_never_overruled(self):
+        """7-Zip reads the content itself and opens what the name hides."""
+        source = self._zip("inside.zip")
+        image = self.dir / "image.iso"
+        source.rename(image)
+        self.assertEqual(ux.categorize_archive(image)[0], "external_7zip")
+
+    def test_no_signature_leaves_the_extension_in_place(self):
+        """Positive-only oracle: an absent signature proves nothing."""
+        path = self.dir / "launcher.pyz"
+        path.write_bytes(b"#!/usr/bin/env python3\n" + b"PK\x03\x04")
+        self.assertEqual(ux.categorize_archive(path), ("zip", ".pyz"))
+
+    def test_every_extension_category_is_placed_against_the_signatures(self):
+        """A category added to CATEGORY_BY_EXT must say which signature
+        agrees with it, or that no signature can overrule it."""
+        for category in set(ux.CATEGORY_BY_EXT.values()):
+            with self.subTest(category=category):
+                self.assertTrue(category in ux.SIGNATURE_AGREEING_WITH
+                                or category in ux.CATEGORIES_NEVER_OVERRULED)
 
     def test_tar_gzip_against_plain_gzip(self):
         tar_gz = self._tar("a.tar", mode="w:gz")
