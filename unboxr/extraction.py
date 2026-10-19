@@ -1081,8 +1081,61 @@ def extract_plain_xz(path: Path, dest: Path, matched_ext: str) -> None:
     """Decompress a plain .xz file (not a tar archive): one single output file."""
     dest.mkdir(parents=True, exist_ok=True)
     output_name = _name_without_extension(path, matched_ext) or f"{path.stem}_decompressed"
-    with lzma.open(path, "rb") as f_in, open(dest / output_name, "wb") as f_out:
-        shutil.copyfileobj(f_in, f_out)
+    with open(dest / output_name, "wb") as f_out:
+        _decompress_xz_with_stream_padding(path, f_out)
+
+
+_XZ_CHUNK = 1 << 20
+
+
+def _decompress_xz_with_stream_padding(path: Path, f_out) -> None:
+    """Write the decompressed content of `path` to `f_out`, accepting Stream
+    Padding.
+
+    WHY NOT `lzma.open`. The .xz format allows Stream Padding -- null bytes, in
+    multiples of four -- after any stream, and `xz -t` accepts it. `lzma.open`
+    reads that padding as the start of another stream: after the LAST stream
+    it fails on a valid file ("Compressed file ended before the end-of-stream
+    marker was reached"); BETWEEN two streams it takes the padding for trailing
+    garbage and stops there, so everything after the first stream is lost
+    with no error at all. Both measured 19 October 2026, on a `.zip.xz`.
+
+    Null bytes between streams are skipped here, whatever their count.
+    Anything else that does not decode after a completed stream ends the
+    output, as `lzma.open` does with trailing garbage: that leniency is kept,
+    not widened. A stream cut short still fails, with `lzma.open`'s own
+    exception and message. Output is produced in bounded chunks: a highly
+    compressed input is never held in memory whole.
+    """
+    decompressor = lzma.LZMADecompressor()
+    completed_streams = 0
+    fresh = True          # nothing fed to `decompressor` yet
+    with open(path, "rb") as f_in:
+        while chunk := f_in.read(_XZ_CHUNK):
+            while chunk:
+                if decompressor is None:
+                    chunk = chunk.lstrip(b"\0")
+                    if not chunk:
+                        break
+                    decompressor = lzma.LZMADecompressor()
+                    fresh = True
+                try:
+                    f_out.write(decompressor.decompress(chunk, _XZ_CHUNK))
+                except lzma.LZMAError:
+                    if fresh and completed_streams:
+                        return      # trailing garbage, as `lzma.open` reads it
+                    raise
+                fresh = False
+                chunk = b""
+                while not decompressor.eof and not decompressor.needs_input:
+                    f_out.write(decompressor.decompress(b"", _XZ_CHUNK))
+                if decompressor.eof:
+                    completed_streams += 1
+                    chunk = decompressor.unused_data
+                    decompressor = None
+    if decompressor is not None and not fresh:
+        raise EOFError("Compressed file ended before the end-of-stream marker "
+                       "was reached")
 
 
 def extract_plain_bz2(path: Path, dest: Path, matched_ext: str) -> None:
@@ -1518,9 +1571,32 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
                 extract_archive(archive, provisional_dest, report=report,
                                 location=_reportable_path(archive, root))
             except Exception as exc:
+                # THE PARTIAL OUTPUT GOES, before anything is said. An
+                # extraction can fail half-way, after writing: a truncated
+                # `.zip.xz` leaves most of a `file.zip` under the provisional
+                # name. Left there, it contradicted the message below -- part
+                # of the content WAS in the tree --, and the next level took
+                # the half-written zip for a nested archive and reported it as
+                # a second failure, under a provisional path that exists
+                # nowhere in the package. Reported 19 October 2026.
+                #
+                # Not when the directory was already occupied: what an earlier
+                # run left there is not this extraction's to remove. If the
+                # removal fails, the cause carries it -- no new message, no new
+                # code -- and what stays is never offered as an archive again.
+                cause = str(exc)
+                if not occupied and provisional_dest.exists():
+                    try:
+                        shutil.rmtree(provisional_dest)
+                    except OSError as removal_exc:
+                        cause = (f"{exc}; its partial output could not be "
+                                 f"removed ({removal_exc}) and stays under "
+                                 f"{provisional_dest}")
+                        attempted_archives.update(
+                            p for p in provisional_dest.rglob("*") if p.is_file())
                 logger.warning("Extraction of %s (%s) failed: %s (archive kept as is). "
                                "Its content is NOT in the extracted tree.",
-                               archive, matched_ext, exc)
+                               archive, matched_ext, cause)
                 # The CODE is read off the exception, with an EXPLICIT fallback
                 # on the generic failure for anything that does not carry one:
                 # a corrupt archive stays a FAILURE. Guessing a refusal there
@@ -1529,7 +1605,7 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
                 # is still there, and hashing it is what lets a reader tell one
                 # unreadable container from another.
                 _record(report, getattr(exc, "code", EXTRACTION_FAILED),
-                        archive, root, level, detail=str(exc),
+                        archive, root, level, detail=cause,
                         digest_of=archive)
                 attempted_archives.add(archive)
                 amputated_archives.add(archive)

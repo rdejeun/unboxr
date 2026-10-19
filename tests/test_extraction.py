@@ -394,6 +394,33 @@ class TestAddedFormats(_Bench):
         self.assertEqual(len(produced), 1)
         self.assertEqual(produced[0].read_bytes(), b"int key = 7;")
 
+    def test_a_plain_xz_with_stream_padding_is_really_extracted(self):
+        """Stream Padding -- null bytes in multiples of four after a stream --
+        is part of the .xz format, and `xz -t` accepts it. `lzma.open` does
+        not: it reads the padding as the start of another stream and fails on
+        a VALID file. Reported against a `.zip.xz`, 19 October 2026."""
+        payload = b"int key = 11;" * 500
+        cases = {
+            "after the last stream": lzma.compress(payload) + b"\0" * 4,
+            "between two streams": (lzma.compress(payload[:100]) + b"\0" * 8
+                                    + lzma.compress(payload[100:])),
+        }
+        for label, data in cases.items():
+            with self.subTest(label):
+                source = self.dir / "padded.zip.xz"
+                source.write_bytes(data)
+                dest = self.dir / ("output_" + label.replace(" ", "_"))
+                ux.extract_archive(source, dest)
+                self.assertEqual(payload, (dest / "padded.zip").read_bytes())
+
+    def test_a_truncated_plain_xz_still_fails(self):
+        """Tolerating padding must not turn a truncated stream into a success."""
+        data = lzma.compress(b"int key = 12;" * 500)
+        source = self.dir / "truncated.xz"
+        source.write_bytes(data[:len(data) // 2])
+        with self.assertRaises(EOFError):
+            ux.extract_archive(source, self.dir / "output_truncated")
+
     def test_a_plain_bz2_is_really_extracted(self):
         source = self._plain_compressed("data.bz2", bz2.open, b"int key = 9;")
         dest = self.dir / "output_bz2"
@@ -846,6 +873,57 @@ class TestTheProvisionalName(_Bench):
         self.assertIn("is NOT in the extracted tree", capture.messages)
         self.assertIn("were left unopened", capture.messages)
         self.assertTrue(broken.is_file())
+
+    def _truncated_zip_xz_at(self, path: Path) -> Path:
+        """A `.zip.xz` whose xz stream is cut short: decompression writes most
+        of the zip, then fails."""
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as z:
+            for i in range(50):
+                z.writestr(f"code/f{i}.c", f"int a{i};" * 2000)
+        data = lzma.compress(inner.getvalue())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data[:-64])
+        return path
+
+    def test_a_failed_extraction_leaves_no_partial_output_in_the_tree(self):
+        """The failure message says the content is NOT in the extracted tree.
+        It was: the partial output stayed under the provisional name, the next
+        level took the half-written `file.zip` for a nested archive, and
+        reported it as a second container that could not be read -- under a
+        path that exists nowhere in the package. Reported 19 October 2026."""
+        root = self._tree()
+        archive = self._truncated_zip_xz_at(root / "dir1" / "dir2" / "file.zip.xz")
+        provisional = ux._provisional_extraction_name(archive, root)
+
+        _, capture = self._capture(ux.flatten_nested_archives, root)
+
+        failures = [record for record in capture.records
+                    if "Extraction of" in record.getMessage()]
+        self.assertEqual(1, len(failures), capture.messages)
+        self.assertIn("file.zip.xz", failures[0].getMessage())
+        self.assertFalse((archive.parent / provisional).exists())
+        self.assertTrue(archive.is_file())
+
+    def test_a_partial_output_that_cannot_be_removed_is_declared_and_not_reopened(self):
+        """When the partial output cannot be removed, the failure says where it
+        stays, and no level offers what is in it as a nested archive."""
+        root = self._tree()
+        archive = self._truncated_zip_xz_at(root / "dir1" / "file.zip.xz")
+        provisional = ux._provisional_extraction_name(archive, root)
+
+        def refuse_removal(path, *args, **kwargs):
+            raise OSError("removal refused by the file system")
+
+        with mock.patch.object(ux.shutil, "rmtree", refuse_removal):
+            _, capture = self._capture(ux.flatten_nested_archives, root)
+
+        failures = [record for record in capture.records
+                    if "Extraction of" in record.getMessage()]
+        self.assertEqual(1, len(failures), capture.messages)
+        self.assertIn("partial output", failures[0].getMessage())
+        self.assertIn(provisional, failures[0].getMessage())
+        self.assertTrue((archive.parent / provisional / "file.zip").is_file())
 
     def test_an_archive_left_in_place_is_not_offered_again_at_every_level(self):
         """The ledger holds ARCHIVE paths, never the transient directories this
