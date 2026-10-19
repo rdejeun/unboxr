@@ -101,6 +101,16 @@ ORACLE_REMINDER = (
 # emitter cannot drift apart. Verified in code review.
 NOT_OPENED_LINE = "Not opened -- %s: %s"
 STILL_IN_TREE_LINE = "In the tree, elsewhere -- %s: %s"
+# The same two lines when the entry carries a `detail`: the NATIVE cause --
+# the `BadZipFile`, the `LZMAError`, the 7-Zip message. The table text says
+# that a container was not read, never why; without the detail a corrupt test
+# fixture and a genuine defect read the same. Not translated and not
+# rephrased: it is a library's message, outside this package's vocabulary.
+NOT_OPENED_WITH_CAUSE_LINE = "Not opened -- %s: %s [%s]"
+STILL_IN_TREE_WITH_CAUSE_LINE = "In the tree, elsewhere -- %s: %s [%s]"
+_SUMMARY_AMPUTATION_LINES = (NOT_OPENED_LINE, STILL_IN_TREE_LINE,
+                             NOT_OPENED_WITH_CAUSE_LINE,
+                             STILL_IN_TREE_WITH_CAUSE_LINE)
 
 
 class _QuietFilter(logging.Filter):
@@ -122,7 +132,7 @@ class _QuietFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         return (record.levelno >= logging.WARNING
                 or record.msg in AMPUTATION_MESSAGES.values()
-                or record.msg in (NOT_OPENED_LINE, STILL_IN_TREE_LINE))
+                or record.msg in _SUMMARY_AMPUTATION_LINES)
 
 
 # The English a human reads for each of the four states. The STATES are named
@@ -1153,6 +1163,16 @@ def configure_logging(verbose: bool, quiet: bool) -> _ProgressAwareHandler:
     return handler
 
 
+def _log_entry(logger: logging.Logger, line: str, line_with_cause: str,
+               entry) -> None:
+    """One summary line for one report entry, with its native cause if any."""
+    if entry.detail:
+        logger.info(line_with_cause, entry.path, text_for(entry.code),
+                    entry.detail)
+    else:
+        logger.info(line, entry.path, text_for(entry.code))
+
+
 def summarise(report, logger: logging.Logger) -> None:
     """Say what the report holds, in prose, at the informational level.
 
@@ -1178,9 +1198,10 @@ def summarise(report, logger: logging.Logger) -> None:
                     profile.extensions_needing_seven_zip,
                     profile.recognised_extensions)
     for entry in report.not_opened:
-        logger.info(NOT_OPENED_LINE, entry.path, text_for(entry.code))
+        _log_entry(logger, NOT_OPENED_LINE, NOT_OPENED_WITH_CAUSE_LINE, entry)
     for entry in report.still_in_tree:
-        logger.info(STILL_IN_TREE_LINE, entry.path, text_for(entry.code))
+        _log_entry(logger, STILL_IN_TREE_LINE, STILL_IN_TREE_WITH_CAUSE_LINE,
+                   entry)
     # `report.widened` is part of the published report surface (README, "Use
     # it as a library") but was missing here: the corpus GREW here, which is
     # not an amputation, so it stays outside `--quiet`'s guarantee -- but the

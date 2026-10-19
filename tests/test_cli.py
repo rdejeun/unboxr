@@ -592,6 +592,42 @@ class TestAmputationsAreNeverHidden(_CommandBench):
         self.assertIn("office container", err)
         self.assertIn("were not opened during this run", err)
 
+    def _archive_with_unreadable_containers(self) -> Path:
+        """A corrupt zip and a truncated xz, nested: both are recognised by
+        their extension and neither can be read."""
+        import lzma
+        xz = lzma.compress(b"payload" * 1000, format=lzma.FORMAT_XZ)
+        return self._zip("package.zip", [
+            ("src/a.txt", "a"),
+            ("tests/data/corrupt.zip", b"PK\x03\x04" + b"\x00" * 40),
+            ("tests/data/truncated.xz", xz[:len(xz) // 2]),
+        ])
+
+    def test_the_summary_line_names_why_a_container_could_not_be_read(self):
+        """The generic text says THAT a container was not read, never WHY.
+
+        The native cause is carried by the report entry's `detail`, and it was
+        dropped by the closing summary: a user saw "a container was recognised
+        but could not be read" for a corrupt test fixture and for a genuine
+        defect alike, with the cause only in a live warning scrolled far above
+        -- or nowhere at all under the failure path. Reported against
+        zip and xz, 19 October 2026.
+        """
+        archive = self._archive_with_unreadable_containers()
+        for argv_tail in ([], ["--quiet"]):
+            with self.subTest(argv_tail=argv_tail):
+                out = self.dir / ("out" + "".join(argv_tail))
+                code, _, err = self._run([str(archive), str(out), *argv_tail])
+                self.assertEqual(0, code)
+                lines = [line for line in err.splitlines()
+                         if "Not opened -- " in line]
+                self.assertEqual(2, len(lines), err)
+                by_path = {("zip" if "corrupt.zip" in line else "xz"): line
+                           for line in lines}
+                self.assertIn("[File is not a zip file]", by_path["zip"])
+                self.assertIn("[Compressed file ended before the end-of-stream "
+                              "marker was reached]", by_path["xz"])
+
     def test_quiet_does_drop_the_ordinary_informational_records(self):
         """Otherwise `--quiet` would mean nothing at all."""
         archive = self._zip("clean.zip", [("src/a.txt", "a")])
