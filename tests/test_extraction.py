@@ -207,6 +207,36 @@ class TestContentIdentification(_Bench):
         spy.assert_not_called()
         self.assertEqual((category, ext), ("zip", ".zip"))
 
+    def test_a_recognition_by_content_is_announced_once_per_file(self):
+        """The report kept one entry per file; the log said it three times --
+        once from the level's scan, once more from each of the two internal
+        re-categorisations, the flattening loop's and `extract_archive`'s.
+        Reported 19 October 2026, on 61 files: 183 lines for 61 facts. A file
+        left in place is not re-announced at the next level either."""
+        root = self.dir / "tree"
+        (root / "idata").mkdir(parents=True)
+        self._zip("inner.zip").rename(root / "idata" / "edk_0008.tar.gz")
+        (root / "idata" / "left.zip.xz").write_bytes(
+            b"7z\xbc\xaf\x27\x1c" + b"\x00" * 26)       # 7z, and unreadable
+        held = ux.ExtractionReport(capability=ux.probe_capability_profile())
+
+        _, capture = self._capture(ux.flatten_nested_archives, root, report=held)
+
+        announcements = [record.getMessage() for record in capture.records
+                         if "recognised by its CONTENT" in record.getMessage()]
+        self.assertEqual(1, sum("edk_0008.tar.gz" in m for m in announcements),
+                         announcements)
+        self.assertEqual(1, sum("left.zip.xz" in m for m in announcements),
+                         announcements)
+
+    def test_a_direct_call_without_a_report_still_announces(self):
+        """The library entry point is unchanged: no report, no memory, one
+        announcement per call."""
+        liar = self._zip("trap.zip").rename(self.dir / "trap.tar.gz")
+        for _ in range(2):
+            _, capture = self._capture(ux.categorize_archive, liar)
+            self.assertIn("misleading", capture.messages)
+
     def test_a_signature_contradicting_the_extension_wins(self):
         """A zip named .tar.gz is a zip.
 
@@ -528,6 +558,21 @@ class TestOfficeContainerExclusion(_Bench):
             result = ux.categorize_archive(document)
         spy.assert_not_called()
         self.assertEqual(result, (None, None))
+
+    def test_an_excluded_container_is_announced_once_across_levels(self):
+        """An office container stays in place, so every level's scan meets it
+        again. The report filed it once; the log now says it once too."""
+        root = self.dir / "tree"
+        root.mkdir()
+        self._document("report.docx").rename(root / "report.docx")
+        self._zip("nested.zip").rename(root / "nested.zip")
+        held = ux.ExtractionReport(capability=ux.probe_capability_profile())
+
+        _, capture = self._capture(ux.flatten_nested_archives, root, report=held)
+
+        exclusions = [record for record in capture.records
+                      if "excluded from extraction" in record.getMessage()]
+        self.assertEqual(1, len(exclusions), capture.messages)
 
     def test_the_exclusion_announces_itself(self):
         document = self._document("report.docx")

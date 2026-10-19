@@ -718,7 +718,22 @@ def categorize_by_content(path: Path):
     return None, None
 
 
-def categorize_archive(path: Path, *, report=None, root=None, level=None):
+def _first_filing(report, code: str, path, root) -> bool:
+    """Whether `(code, path)` is NOT yet in `report` -- the test `record()`
+    itself runs. True without a report: nothing remembers, so nothing is a
+    repeat. Best-effort: if the test cannot be run, the answer is True, and a
+    line is said twice rather than not at all."""
+    if report is None:
+        return True
+    try:
+        return not report.already_recorded(
+            code, _reportable_path_and_frame(path, root)[0])
+    except Exception:
+        return True
+
+
+def categorize_archive(path: Path, *, report=None, root=None, level=None,
+                       announce: bool = True):
     """
     Returns (category, matched_extension), or (None, None) if unrecognised.
 
@@ -732,7 +747,16 @@ def categorize_archive(path: Path, *, report=None, root=None, level=None):
     from four call sites, one of them inside the sorted comprehension of
     `flatten_nested_archives`, re-evaluated at every level: recording the same
     container again changes nothing, which is what the report guarantees and
-    what a log cannot.
+    what a log could not -- until the log was made to follow the report.
+
+    ONE ANNOUNCEMENT PER FACT, like one entry per fact. With a report, a line
+    is logged only when its entry is FILED for the first time, so the level
+    scans that meet the same office container again say nothing new. The two
+    internal RE-categorisations -- the flattening loop's and
+    `extract_archive`'s, which carry no report on purpose -- pass
+    `announce=False`: the archive they look at was announced, if at all, by
+    the call that found it. Reported 19 October 2026: 183 lines for 61 files.
+    A direct call with no report announces every time, as it always did.
 
     Three steps, in this order -- the order IS the contract:
       1. declared exclusion: an office container is set aside WITHOUT a single
@@ -753,8 +777,10 @@ def categorize_archive(path: Path, *, report=None, root=None, level=None):
     #     step (2), which already tests this way.
     name = path.name.lower()
     if any(name.endswith(ext) for ext in NOT_EXTRACTED_EXTENSIONS):
-        logger.info("%s: office container, excluded from extraction -- its "
-                    "content is not the material this tool opens.", path.name)
+        if announce and _first_filing(report, OFFICE_CONTAINER_EXCLUDED,
+                                      path, root):
+            logger.info("%s: office container, excluded from extraction -- its "
+                        "content is not the material this tool opens.", path.name)
         # Still on disk: an office container is set aside, never opened,
         # so nothing has removed it.
         _record(report, OFFICE_CONTAINER_EXCLUDED, path, root, level,
@@ -774,8 +800,9 @@ def categorize_archive(path: Path, *, report=None, root=None, level=None):
     #     shrinks without a trace.
     category, ext = categorize_by_content(path)
     if category is not None:
-        logger.info("%s: archive recognised by its CONTENT (%s) -- extension "
-                    "absent or misleading.", path.name, category)
+        if announce and _first_filing(report, RECOGNISED_BY_CONTENT, path, root):
+            logger.info("%s: archive recognised by its CONTENT (%s) -- extension "
+                        "absent or misleading.", path.name, category)
         # Still on disk: recognition reads the first bytes, it extracts
         # nothing.
         _record(report, RECOGNISED_BY_CONTENT, path, root, level,
@@ -1425,10 +1452,11 @@ def extract_archive(archive_path: Path, dest: Path, *, report=None,
     this function means the caller already categorised the archive, with the
     report and with the relative path; handing it over a second time would file
     the same container again under the bare file NAME, which is a different
-    string and therefore a second entry for one container.
+    string and therefore a second entry for one container. Nor does it
+    announce anything, for the same reason: the caller already did.
     """
     dest.mkdir(parents=True, exist_ok=True)
-    category, ext = categorize_archive(archive_path)
+    category, ext = categorize_archive(archive_path, announce=False)
 
     if category == "zip":
         _extract_zip_with_checks(archive_path, dest)
@@ -1556,7 +1584,7 @@ def flatten_nested_archives(root: Path, max_depth: int = 10,
         logger.info("Level %s: %s nested archive(s) found.", level, len(found_archives))
         _note_depth(report, reached=level)
         for index, archive in enumerate(found_archives, start=1):
-            category, matched_ext = categorize_archive(archive)
+            category, matched_ext = categorize_archive(archive, announce=False)
             # AT THE START ONLY. The iteration has four ways out (failure,
             # archive kept, rename failed, success); an end event would have
             # to be written at each of them, and the next event -- or the end
