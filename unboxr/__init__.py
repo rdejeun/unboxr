@@ -81,7 +81,7 @@ from .sbom import (
 # here through `[tool.setuptools.dynamic]`. The reverse direction is forbidden:
 # reading the version back from installed metadata fails whenever the package is
 # used straight from a clone, which is exactly how it is used today.
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
