@@ -241,7 +241,7 @@ class TestPackagingBoundary(unittest.TestCase):
         # ENGRAVED ON PURPOSE: the one guard in this file that the version
         # -- not the package surface -- makes go red. Bump it together with
         # `unboxr.__version__`.
-        self.assertEqual("0.2.1", unboxr.__version__)
+        self.assertEqual("0.2.2", unboxr.__version__)
         source = (PACKAGE_ROOT / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("importlib.metadata", source)
 
